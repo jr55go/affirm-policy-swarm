@@ -11,3 +11,16 @@ __pycache__/
 reports/
 notebook.json
 infrastructure/connectors/checkpoints.json
+
+# Backup and Snapshot Files
+*.bak
+*.backup*
+*.orig
+*.save
+*.swp
+*.before_*
+baseline/
+
+# One-off Patch Scripts (Optional, but keeps repo clean)
+patch_*.py
+fix_*.py
