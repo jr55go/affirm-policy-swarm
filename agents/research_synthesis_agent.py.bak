@@ -1,0 +1,619 @@
+"""
+Research Synthesis Agent for the Affirm Policy Swarm.
+Responsible for analyzing academic, think tank, and industry research.
+"""
+
+import time
+import uuid
+import hashlib
+from typing import Dict, Any, List, Optional
+from datetime import datetime, timezone
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from load_swarm_jobs import load_swarm_jobs
+
+from .base_agent import BaseAgent
+from infrastructure.config import load_config
+from infrastructure.database import neo4j_session
+
+
+class ResearchSynthesisAgent(BaseAgent):
+    """Research Synthesis Agent for analyzing research and publications."""
+    
+    def __init__(self, agent_id: str = None):
+        super().__init__(agent_id or f"res-synth-{str(uuid.uuid4())[:8]}", "Research Synthesis Agent")
+        self.config = load_config()
+        
+    def execute_task(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute research synthesis tasks."""
+        task_type = task_data.get("type", "unknown")
+        
+        self.log_thought(f"Research Synthesis agent received task: {task_type}")
+        
+        if task_type == "synthesize_research":
+            return self._synthesize_research(task_data)
+        elif task_type == "monitor_publications":
+            return self._monitor_publications(task_data)
+        elif task_type == "analyze_trends":
+            return self._analyze_trends(task_data)
+        elif task_type == "evaluate_credibility":
+            return self._evaluate_credibility(task_data)
+        else:
+            return {
+                "status": "error",
+                "message": f"Unknown task type: {task_type}",
+                "agent_id": self.agent_id
+            }
+            
+    def _synthesize_research(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Synthesize research on assigned topics and products."""
+        research_topic = task_data.get("research_topic", "Buy Now, Pay Later")
+        product = task_data.get("product", "Buy Now, Pay Later")
+        lookback_days = task_data.get("lookback_days", 30)
+        sources = task_data.get("sources", self._get_default_sources())
+        
+        self.log_thought(f"Synthesizing research on {research_topic} for {product} (last {lookback_days}d)")
+        self.log_thought(f"Sources: {', '.join(sources)}")
+        
+        # CRITICAL INSTRUCTION - DEDUPLICATION: Check if we've recently synthesized this topic
+        lookup_key = f"res_synth:{research_topic}:{product}:{lookback_days}"
+        recent_synthesis = self.check_redis_deduplication(lookup_key)
+        if recent_synthesis:
+            self.log_thought(f"Recent research synthesis found for {lookup_key}, checking for updates")
+            # Check if there's been significant change since last synthesis
+            last_run = recent_synthesis.get("completed_at")
+            if last_run:
+                try:
+                    last_run_dt = datetime.fromisoformat(last_run.replace('Z', '+00:00'))
+                    days_since = (datetime.now(timezone.utc) - last_run_dt).total_seconds() / 86400
+                    
+                    if days_since < 7:  # Less than 7 days since last synthesis (research changes slower)
+                        self.log_thought(f"Recent synthesis was {days_since:.1f}d ago, returning cached result")
+                        return {
+                            "status": "cached",
+                            "agent_id": self.agent_id,
+                            "research_topic": research_topic,
+                            "product": product,
+                            "data_source": "cache",
+                            "cached_result": recent_synthesis,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                except Exception as e:
+                    self.log_thought(f"Error parsing timestamp: {e}")
+        
+        # In a real implementation, this would query academic databases, think tank websites, etc.
+        # For now, we'll simulate the research process
+        
+        # Simulate fetching research publications
+        research_items = self._fetch_research_publications(research_topic, product, lookback_days, sources)
+        
+        # Process and analyze the research items
+        synthesized_items = self._synthesize_research_items(research_items, product)
+        
+        # Store results in graph database for future reference
+        self._store_research_results(research_topic, product, synthesized_items)
+        
+        # Store synthesis result in Redis for deduplication
+        synthesis_result = {
+            "research_topic": research_topic,
+            "product": product,
+            "lookback_days": lookback_days,
+            "sources_checked": sources,
+            "items_found": len(research_items),
+            "relevant_items": len(synthesized_items),
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "summary": self._generate_research_summary(synthesized_items)
+        }
+        
+        self.store_redis_deduplication(lookup_key, synthesis_result, expire_seconds=604800)  # 7 days
+        
+        return {
+            "status": "success",
+            "agent_id": self.agent_id,
+            "research_topic": research_topic,
+            "product": product,
+            "lookback_days": lookback_days,
+            "sources_checked": sources,
+            "research_items_found": len(research_items),
+            "relevant_items": len(synthesized_items),
+            "synthesized_items": synthesized_items[:5],  # Return first 5 for brevity
+            "summary": synthesis_result["summary"],
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    def _get_default_sources(self) -> List[str]:
+        """Get default research sources."""
+        return [
+            "Semantic Scholar",
+            "SSRN",
+            "NBER",
+            "Brookings Institution",
+            "Urban Institute",
+            "Consumer Federation of America",
+            "Pew Research Center",
+            "Federal Reserve Research",
+            "Journal of Financial Economics",
+            "Journal of Consumer Affairs"
+        ]
+        
+    def _fetch_research_publications(self, topic: str, product: str, 
+                                   lookback_days: int, sources: List[str]) -> List[Dict[str, Any]]:
+        """Fetch research publications from sources (simulated)."""
+        self.log_thought(f"Fetching research publications for {topic} - {product}")
+        
+        # In reality, this would:
+        # 1. Query Semantic Scholar API for academic papers
+        # 2. Access SSRN for working papers
+        # 3. Check NBER for working papers
+        # 4. Scrape think tank websites for reports and briefs
+        # 5. Search journal databases for recent publications
+        # 6. Filter by date range and topic relevance
+        
+        # For simulation, return mock data based on topic
+        mock_items = []
+        
+        if "bnpl" in topic.lower() or "buy now" in topic.lower() or "installment" in topic.lower():
+            mock_items = [
+                {
+                    "title": "The Rise of Buy Now, Pay Later: Risks and Opportunities for Consumers",
+                    "authors": ["Smith, J.", "Johnson, A.", "Williams, K."],
+                    "publication": "Journal of Consumer Affairs",
+                    "publication_date": "2026-05-15",
+                    "doi": "10.1111/joca.12456",
+                    "url": "https://doi.org/10.1111/joca.12456",
+                    "abstract": "This paper examines the rapid growth of BNPL services and their impact on consumer financial health, spending patterns, and debt accumulation.",
+                    "keywords": ["BNPL", "consumer credit", "debt", "financial technology"],
+                    "source": "Journal of Consumer Affairs",
+                    "relevance_score": 0.92
+                },
+                {
+                    "title": "Regulatory Approaches to Point-of-Sale Lending: International Comparisons",
+                    "authors": ["Brown, L.", "Davis, M."],
+                    "institution": "Brookings Institution",
+                    "publication_date": "2026-06-01",
+                    "type": "policy brief",
+                    "url": "https://www.brookings.edu/research/regulatory-approaches-to-point-of-sale-lending/",
+                    "abstract": "Comparative analysis of regulatory frameworks for BNPL and similar point-of-sale lending products across OECD countries.",
+                    "keywords": ["BNPL", "regulation", "international", "consumer protection"],
+                    "source": "Brookings Institution",
+                    "relevance_score": 0.88
+                },
+                {
+                    "title": "Algorithmic Underwriting in Alternative Lending: Fairness and Accuracy Trade-offs",
+                    "authors": ["Chen, Y.", "Rodriguez, P."],
+                    "publication": "SSRN Working Paper",
+                    "publication_date": "2026-05-22",
+                    "doi": "10.2139/ssrn.4123456",
+                    "url": "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4123456",
+                    "abstract": "Examining the use of machine learning in credit underwriting for alternative lending products, including BNPL, with focus on bias detection and mitigation.",
+                    "keywords": ["algorithmic lending", "machine learning", "fairness", "credit scoring"],
+                    "source": "SSRN",
+                    "relevance_score": 0.85
+                },
+                {
+                    "title": "Consumer Understanding of BNPL Terms and Conditions",
+                    "authors": ["Williams, T.", "Anderson, R."],
+                    "institution": "Urban Institute",
+                    "publication_date": "2026-05-28",
+                    "type": "research report",
+                    "url": "https://www.urban.org/research/publication/consumer-understanding-bnpl-terms",
+                    "abstract": "Survey-based study examining consumer comprehension of BNPL agreements, disclosure effectiveness, and decision-making processes.",
+                    "keywords": ["consumer understanding", "disclosures", "decision making", "survey"],
+                    "source": "Urban Institute",
+                    "relevance_score": 0.90
+                }
+            ]
+        
+        # Filter by relevance score
+        relevant_items = [item for item in mock_items if item.get("relevance_score", 0) >= 0.7]
+        
+        self.log_thought(f"Found {len(mock_items)} research items, {len(relevant_items)} relevant for {product}")
+        return relevant_items
+        
+    def _synthesize_research_items(self, items: List[Dict[str, Any]], product: str) -> List[Dict[str, Any]]:
+        """Synthesize research items for insights and implications."""
+        self.log_thought(f"Synthesizing {len(items)} research items for {product} implications")
+        
+        synthesized = []
+        for item in items:
+            # In a real implementation, this would use LLM to analyze the research
+            # For now, we'll do rule-based synthesis
+            
+            synthesis = {
+                "item_id": hashlib.md5(f"{item.get('title', '')}{item.get('publication_date', '')}".encode()).hexdigest()[:12],
+                "title": item.get("title"),
+                "authors": item.get("authors", []),
+                "publication": item.get("publication", item.get("source", "Unknown")),
+                "publication_date": item.get("publication_date"),
+                "type": item.get("type", "article"),
+                "institution": item.get("institution", ""),
+                "doi": item.get("doi"),
+                "url": item.get("url"),
+                "abstract": item.get("abstract", ""),
+                "keywords": item.get("keywords", []),
+                "source": item.get("source", ""),
+                "research_area": self._categorize_research_area(item, product),
+                "key_findings": self._extract_key_findings(item, product),
+                "implications_for_affirm": self._assess_implications(item, product),
+                "methodology_notes": self._note_methodology(item),
+                "credibility_score": self._assess_credibility(item),
+                "synthesis_timestamp": datetime.now(timezone.utc).isoformat(),
+                "synthesist_agent": self.agent_id
+            }
+            
+            synthesized.append(synthesis)
+            
+        # Sort by relevance score and recency
+        synthesized.sort(
+            key=lambda x: (
+                x.get("credibility_score", 0), 
+                x.get("publication_date", "1900-01-01")
+            ), 
+            reverse=True
+        )
+        return synthesized
+        
+    def _categorize_research_area(self, item: Dict[str, Any], product: str) -> str:
+        """Categorize research into thematic areas."""
+        title = item.get("title", "").lower()
+        abstract = item.get("abstract", "").lower()
+        keywords = [k.lower() for k in item.get("keywords", [])]
+        
+        text_to_check = f"{title} {abstract} {' '.join(keywords)}"
+        
+        # Define research areas
+        if any(term in text_to_check for term in ["regulation", "regulatory", "policy", "compliance", "law"]):
+            return "Regulatory & Policy"
+        elif any(term in text_to_check for term in ["consumer", "behavior", "understanding", "perception", "attitude"]):
+            return "Consumer Behavior"
+        elif any(term in text_to_check for term in ["algorithmic", "machine learning", "ai", "scoring", "underwriting"]):
+            return "Technology & Underwriting"
+        elif any(term in text_to_check for term in ["debt", "credit", "financial health", "delinquency", "default"]):
+            return "Financial Health & Credit Risk"
+        elif any(term in text_to_check for term in ["market", "competition", "industry", "growth", "adoption"]):
+            return "Market Dynamics"
+        else:
+            return "General"
+            
+    def _extract_key_findings(self, item: Dict[str, Any], product: str) -> List[str]:
+        """Extract key findings from research."""
+        findings = []
+        abstract = item.get("abstract", "").lower()
+        
+        # Simple extraction based on common patterns in abstracts
+        if "find" in abstract or "result" in abstract or "conclude" in abstract:
+            # In reality, we'd use NLP to extract findings
+            # For simulation, return plausible findings based on topic
+            
+            if "bnpl" in abstract or "buy now" in abstract:
+                if "debt" in abstract or "financial health" in abstract:
+                    findings.append("BNPL use associated with increased debt accumulation for some consumer segments")
+                if "disclosure" in abstract or "understanding" in abstract:
+                    findings.append("Consumer understanding of BNPL terms varies significantly by demographic factors")
+                if "regulation" in abstract or "policy" in abstract:
+                    findings.append("Regulatory approaches to BNPL are evolving rapidly across jurisdictions")
+                if "algorithmic" in abstract or "machine learning" in abstract:
+                    findings.append("Algorithmic underwriting in BNPL presents both opportunities and fairness challenges")
+                    
+        # Add default findings if none extracted
+        if not findings:
+            findings = [
+                "Research indicates significant market growth and consumer adoption",
+                "Studies highlight both benefits and risks associated with the product category",
+                "Regulatory attention is increasing in multiple jurisdictions"
+            ]
+            
+        return list(set(findings))  # Remove duplicates
+        
+    def _assess_implications(self, item: Dict[str, Any], product: str) -> List[str]:
+        """Assess implications of research for Affirm."""
+        implications = []
+        title = item.get("title", "").lower()
+        abstract = item.get("abstract", "").lower()
+        keywords = [k.lower() for k in item.get("keywords", [])]
+        research_area = self._categorize_research_area(item, product)
+        
+        text_to_check = f"{title} {abstract} {' '.join(keywords)}"
+        
+        # Area-specific implications
+        if research_area == "Regulatory & Policy":
+            if "compliance" in text_to_check or "regulation" in text_to_check:
+                implications.append("May require adjustments to compliance programs and monitoring systems")
+            if "consumer protection" in text_to_check:
+                implications.append("Potential need for enhanced consumer protection measures")
+                
+        elif research_area == "Consumer Behavior":
+            if "understanding" in text_to_check or "awareness" in text_to_check:
+                implications.append("Suggests need for improved customer education and transparency initiatives")
+            if "debt" in text_to_check or "financial health" in text_to_check:
+                implications.append("Indicates importance of responsible lending practices and affordability checks")
+                
+        elif research_area == "Technology & Underwriting":
+            if "algorithmic" in text_to_check or "machine learning" in text_to_check:
+                implications.append("Relevant to ongoing model development and fairness testing efforts")
+            if "scoring" in text_to_check or "underwriting" in text_to_check:
+                implications.append("May inform credit risk assessment and underwriting criteria refinement")
+                
+        elif research_area == "Financial Health & Credit Risk":
+            if "debt" in text_to_check or "default" in text_to_check:
+                implications.append("Important for portfolio risk management and collection strategy planning")
+            if "financial health" in text_to_check:
+                implications.append("Suggests value in monitoring customer financial wellness metrics")
+                
+        elif research_area == "Market Dynamics":
+            if "growth" in text_to_check or "adoption" in text_to_check:
+                implications.append("Supports market opportunity analysis and competitive positioning")
+            if "competition" in text_to_check:
+                implications.append("Relevant to differentiation strategy and value proposition development")
+                
+        # Add general implications
+        implications.extend([
+            "Provides evidence base for product development and risk management decisions",
+            "Informs stakeholder communication and regulatory engagement strategies"
+        ])
+        
+        return list(set(implications))  # Remove duplicates
+        
+    def _note_methodology(self, item: Dict[str, Any]) -> str:
+        """Note methodological considerations."""
+        methodology = ""
+        abstract = item.get("abstract", "").lower()
+        item_type = item.get("type", "").lower()
+        
+        if "survey" in abstract or "questionnaire" in abstract:
+            methodology += "Survey-based; consider sampling bias and response rate limitations. "
+        if "experimental" in abstract or "randomized" in abstract or "rct" in abstract:
+            methodology += "Experimental design; strong causal inference potential. "
+        if "qualitative" in abstract or "interview" in abstract or "focus group" in abstract:
+            methodology += "Qualitative research; rich insights but limited generalizability. "
+        if "meta-analysis" in abstract or "systematic review" in abstract:
+            methodology += "Meta-analysis/systematic review; high evidence synthesis quality. "
+        if "working paper" in item_type:
+            methodology += "Working paper; preliminary findings not yet peer-reviewed. "
+        if "journal" in item.get("publication", "").lower():
+            methodology += "Peer-reviewed journal article; higher credibility standard. "
+            
+        return methodology.strip() or "Standard academic research methodology applied."
+        
+    def _assess_credibility(self, item: Dict[str, Any]) -> float:
+        """Assess credibility of research source (0.0-1.0)."""
+        score = 0.5  # Base score
+        
+        # Source-based adjustments
+        source = item.get("source", "").lower()
+        publication = item.get("publication", "").lower()
+        
+        # Peer-reviewed journals
+        if any(j in publication for j in ["journal", "review", "quarterly"]):
+            score += 0.2
+            
+        # Reputable institutions
+        institution = item.get("institution", "").lower()
+        reputable_institutions = [
+            "brookings", "urban institute", "pew", "nber", "national bureau",
+            "federal reserve", "harvard", "stanford", "mit", "yale", "princeton"
+        ]
+        if any(inst in institution for inst in reputable_institutions):
+            score += 0.15
+            
+        # Think tanks (variable credibility)
+        think_tanks = ["brookings", "urban institute", "pew", "cato", "heritage"]
+        if any(tt in source for tt in think_tanks):
+            score += 0.1  # Think tanks provide valuable policy perspectives
+            
+        # SSRN and working papers (preliminary)
+        if "ssrn" in source or "working paper" in item.get("type", "").lower():
+            score += 0.05  # Early access to research but not peer-reviewed
+            
+        # Government sources
+        if any(gov in source for gov in ["gov", "federal", "national"]):
+            score += 0.1
+            
+        # Recency boost (more recent = slightly higher score for relevance)
+        pub_date = item.get("publication_date")
+        if pub_date:
+            try:
+                pub_dt = datetime.strptime(pub_date, "%Y-%m-%d")
+                days_old = (datetime.now() - pub_dt).days
+                if days_old < 90:  # Less than 3 months old
+                    score += 0.1
+                elif days_old < 180:  # Less than 6 months old
+                    score += 0.05
+            except:
+                pass  # Date parsing failed
+                
+        # Ensure score stays in bounds
+        return min(1.0, max(0.1, score))
+        
+    def _store_research_results(self, topic: str, product: str, 
+                              synthesized_items: List[Dict[str, Any]]) -> bool:
+        """Store research synthesis results in Neo4j graph."""
+        if not self.neo4j_driver:
+            self.logger.warning("Neo4j driver not available for storing results")
+            return False
+            
+        try:
+            with neo4j_session() as session:
+                # Create or update research synthesis record
+                query = """
+                MERGE (r:ResearchSynthesis {
+                    topic: $topic,
+                    product: $product,
+                    synthesis_period: $period
+                })
+                SET r.items_analyzed = $items_count,
+                    r.relevant_items = $relevant_count,
+                    r.last_updated = $timestamp,
+                    r.synthesis_data = $synthesis_data
+                RETURN r.id as record_id
+                """
+                result = session.run(query, 
+                                   topic=topic,
+                                   product=product,
+                                   synthesis_period=f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')} (30d)",
+                                   items_count=len(self._fetch_research_publications(topic, product, 30, self._get_default_sources())),  # This would be cached in reality
+                                   relevant_count=len(synthesized_items),
+                                   timestamp=datetime.now(timezone.utc).isoformat(),
+                                   synthesis_data=json.dumps(synthesized_items))
+                record = result.single()
+                
+                if record:
+                    self.logger.debug(f"Stored research synthesis results for {topic}:{product}")
+                    return True
+                return False
+        except Exception as e:
+            self.logger.error(f"Error storing research results: {e}")
+            return False
+            
+    def _generate_research_summary(self, synthesized_items: List[Dict[str, Any]]) -> str:
+        """Generate a human-readable summary of research synthesis results."""
+        if not synthesized_items:
+            return "No relevant research found"
+            
+        # Count by research area
+        areas = {}
+        for item in synthesized_items:
+            area = item.get("research_area", "Unknown")
+            areas[area] = areas.get(area, 0) + 1
+            
+        # Count by source type
+        sources = {}
+        for item in synthesized_items:
+            source = item.get("source", "Unknown")
+            sources[source] = sources.get(source, 0) + 1
+            
+        # Count by recency
+        recent_count = 0
+        for item in synthesized_items:
+            pub_date = item.get("publication_date")
+            if pub_date:
+                try:
+                    pub_dt = datetime.strptime(pub_date, "%Y-%m-%d")
+                    days_old = (datetime.now() - pub_dt).days
+                    if days_old < 30:  # Last month
+                        recent_count += 1
+                except:
+                    pass
+        
+        summary_parts = []
+        if areas:
+            area_str = ", ".join([f"{count} {area}" for area, count in areas.items()])
+            summary_parts.append(f"By area: {area_str}")
+        if sources:
+            source_str = ", ".join([f"{count} {source}" for source, count in sources.items()])
+            summary_parts.append(f"By source: {source_str}")
+        if recent_count > 0:
+            summary_parts.append(f"{recent_count} items from last month")
+            
+        return f"Research synthesis: {'; '.join(summary_parts)}"
+        
+    def _monitor_publications(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Monitor specific publications or sources for new content."""
+        source = task_data.get("source", "")
+        publication_id = task_data.get("publication_id", "")
+        lookback_hours = task_data.get("lookback_hours", 24)
+        
+        self.log_thought(f"Monitoring {source} for new publications (last {lookback_hours}h)")
+        
+        # In reality, this would set up alerts or polling for specific sources
+        # For simulation, return monitoring setup confirmation
+        
+        return {
+            "status": "success",
+            "agent_id": self.agent_id,
+            "source": source,
+            "publication_id": publication_id,
+            "monitoring_established": True,
+            "check_frequency": "hourly",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    def _analyze_trends(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze trends in research over time."""
+        research_topic = task_data.get("research_topic", "Buy Now, Pay Later")
+        time_period = task_data.get("time_period", "1y")
+        
+        self.log_thought(f"Analyzing research trends for {research_topic} over {time_period}")
+        
+        # In reality, this would perform temporal analysis
+        # For simulation, return basic trend analysis
+        
+        return {
+            "status": "success",
+            "agent_id": self.agent_id,
+            "research_topic": research_topic,
+            "time_period": time_period,
+            "trend_analyzed": True,
+            "key_trends": [
+                "Increasing volume of research on BNPL and alternative lending",
+                "Growing focus on consumer protection and financial health impacts",
+                "Rising interest in algorithmic fairness and transparency"
+            ],
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    def _evaluate_credibility(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Evaluate credibility of a specific research source or claim."""
+        source = task_data.get("source", "")
+        claim_or_title = task_data.get("claim_or_title", "")
+        
+        self.log_thought(f"Evaluating credibility of {source}: {claim_or_title}")
+        
+        # In reality, this would check source reputation, citations, etc.
+        # For simulation, return basic evaluation
+        
+        credibility_score = self._assess_credibility({
+            "source": source,
+            "title": claim_or_title
+        })
+        
+        return {
+            "status": "success",
+            "agent_id": self.agent_id,
+            "source": source,
+            "claim_evaluated": claim_or_title,
+            "credibility_score": credibility_score,
+            "assessment_factors": ["source reputation", "peer review status", "institutional affiliation"],
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    def get_capabilities(self) -> List[str]:
+        """Return list of capabilities this agent provides."""
+        return [
+            "research_synthesis",
+            "publication_monitoring",
+            "trend_analysis",
+            "credibility_evaluation",
+            "source_specific_monitoring",
+            "research_area_categorization",
+            "implication_assessment",
+            "deduplication_enforcement",
+            "graph_database_storage",
+            "methodology_noting"
+        ]
+
+
+# Example usage
+if __name__ == "__main__":
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    
+    agent = ResearchSynthesisAgent()
+    
+    # Test research synthesis
+    result = agent.execute_task({
+        "type": "synthesize_research",
+        "research_topic": "Buy Now, Pay Later",
+        "product": "Buy Now, Pay Later",
+        "lookback_days": 30
+    })
+    
+    print("Research synthesis result:")
+    print(f"Status: {result['status']}")
+    print(f"Research Topic: {result.get('research_topic')}")
+    print(f"Product: {result.get('product')}")
+    print(f"Items found: {result.get('research_items_found')}")
+    print(f"Relevant items: {result.get('relevant_items')}")
+    print(f"Summary: {result.get('summary')}")

@@ -1,0 +1,705 @@
+"""
+Legislative Monitor Agent for the Affirm Policy Swarm.
+Responsible for tracking bills, resolutions, amendments across jurisdictions.
+"""
+
+import time
+import uuid
+import hashlib
+import requests
+import json
+from typing import Dict, Any, List, Optional
+from datetime import datetime, timezone
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from load_swarm_jobs import load_swarm_jobs
+
+from .base_agent import BaseAgent
+from infrastructure.config import load_config
+from infrastructure.database import neo4j_session
+
+
+class LegislativeMonitorAgent(BaseAgent):
+    """Legislative Monitor Agent for tracking bills and legislation."""
+    
+    def __init__(self, agent_id: str = None):
+        super().__init__(agent_id or f"leg-monitor-{str(uuid.uuid4())[:8]}", "Legislative Monitor Agent")
+        self.config = load_config()
+        self.congress_gov_api_key = self.config.legislative_sources["congress_gov"]["api_key"]
+        self.congress_gov_base_url = "https://api.congress.gov/v3"
+        self.legiscan_api_key = self.config.legislative_sources["legiscan"]["api_key"]
+        self.legiscan_base_url = "https://api.legiscan.com/"
+
+    def execute_task(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute legislative monitoring tasks."""
+        task_type = task_data.get("type", "unknown")
+        
+        self.log_thought(f"Legislative monitor received task: {task_type}")
+        
+        if task_type == "legislative_monitoring":
+            return self._monitor_legislation(task_data)
+        elif task_type == "track_bill":
+            return self._track_bill(task_data)
+        elif task_type == "analyze_amendments":
+            return self._analyze_amendments(task_data)
+        else:
+            return {
+                "status": "error",
+                "message": f"Unknown task type: {task_type}",
+                "agent_id": self.agent_id
+            }
+
+    def _get_congress_gov_bill(self, bill_type: str, bill_number: int, congress: int) -> Optional[Dict[str, Any]]: 
+        """Fetch a specific bill from Congress.gov API."""
+        if not self.congress_gov_api_key:
+            self.log_thought("Congress.gov API key not configured, skipping API call")
+            return None
+            
+        try:
+            url = f"{self.congress_gov_base_url}/{congress}/bills/{bill_type}/{bill_number}"
+            params = {
+                "api_key": self.congress_gov_api_key,
+                "format": "json"
+            }
+            
+            response = requests.get(url, params=params, timeout=30)
+            if response.status_code == 200:
+                data = response.json()
+                bill = data.get("bill", {})
+                if bill:
+                    # Extract relevant information
+                    return {
+                        "bill_id": f"{bill_type.upper()}-{bill_number}-{congress}",
+                        "title": bill.get("title", ""),
+                        "sponsor": self._get_sponsor_name(bill.get("sponsors", [])),
+                        "introduced_date": bill.get("introducedDate", ""),
+                        "latest_action": bill.get("latestAction", {}).get("text", ""),
+                        "url": bill.get("url", ""),
+                        "keywords": self._extract_keywords_from_bill(bill),
+                        "relevance_score": 0.95  # High relevance for specific bill lookup
+                    }
+            else:
+                self.log_thought(f"Congress.gov API returned status {response.status_code} for {bill_type} {bill_number}")
+                
+        except Exception as e:
+            self.log_thought(f"Error fetching bill {bill_type} {bill_number} from Congress.gov: {e}")
+            
+        return None
+    
+    def _search_congress_gov_bills(self, query: str, congress: int, limit: int = 10) -> List[Dict[str, Any]]:
+        """Search for bills on Congress.gov API."""
+        if not self.congress_gov_api_key:
+            self.log_thought("Congress.gov API key not configured, skipping API call")
+            return []
+            
+        try:
+            url = f"{self.congress_gov_base_url}/{congress}/bills"
+            params = {
+                "query": query,
+                "api_key": self.congress_gov_api_key,
+                "format": "json",
+                "pageSize": limit
+            }
+            
+            response = requests.get(url, params=params, timeout=30)
+            if response.status_code == 200:
+                data = response.json()
+                bills = data.get("bills", [])
+                results = []
+                
+                for bill in bills:
+                    bill_info = {
+                        "bill_id": f"{bill.get('type', '')}-{bill.get('number', '')}-{congress}",
+                        "title": bill.get("title", ""),
+                        "sponsor": self._get_sponsor_name(bill.get("sponsors", [])),
+                        "introduced_date": bill.get("introducedDate", ""),
+                        "latest_action": bill.get("latestAction", {}).get("text", ""),
+                        "url": bill.get("url", ""),
+                        "keywords": self._extract_keywords_from_bill(bill),
+                        "relevance_score": 0.8  # Good relevance for search results
+                    }
+                    results.append(bill_info)
+                
+                return results
+            else:
+                self.log_thought(f"Congress.gov search API returned status {response.status_code} for query '{query}'")
+                
+        except Exception as e:
+            self.log_thought(f"Error searching bills on Congress.gov: {e}")
+            
+        return []
+    
+    def _get_sponsor_name(self, sponsors: List[Dict[str, Any]]) -> str:
+        """Extract sponsor name from sponsors list."""
+        if not sponsors:
+            return ""
+        # Get the first sponsor
+        sponsor = sponsors[0] if isinstance(sponsors, list) else {}
+        first_name = sponsor.get("firstName", "")
+        last_name = sponsor.get("lastName", "")
+        middle_name = sponsor.get("middleName", "")
+        name_parts = [first_name, middle_name, last_name]
+        return " ".join(part for part in name_parts if part).strip()
+    
+    def _extract_keywords_from_bill(self, bill: Dict[str, Any]) -> List[str]:
+        """Extract relevant keywords from bill data."""
+        keywords = []
+        # Add bill type and number
+        bill_type = bill.get("type", "")
+        bill_number = bill.get("number", "")
+        if bill_type and bill_number:
+            keywords.append(f"{bill_type.upper()} {bill_number}")
+        
+        # Add policy area if available
+        policy_area = bill.get("policyArea", "")
+        if policy_area:
+            keywords.append(policy_area.lower().replace(" ", "_"))
+        
+        # Add subjects if available
+        subjects = bill.get("subjects", [])
+        if isinstance(subjects, list):
+            for subject in subjects:
+                if isinstance(subject, dict):
+                    subject_name = subject.get("name", "")
+                    if subject_name:
+                        keywords.append(subject_name.lower().replace(" ", "_"))
+                elif isinstance(subject, str):
+                    keywords.append(subject.lower().replace(" ", "_"))
+        
+        # Add BNPL-related terms if present in title
+        title = bill.get("title", "").lower()
+        bnpl_terms = ["buy now pay later", "bnpl", "installment loan", "point of sale", "pos lending"]
+        for term in bnpl_terms:
+            if term in title:
+                keywords.append(term.replace(" ", "_"))
+                
+        return list(set(keywords))  # Remove duplicates
+    
+    def _get_legiscan_bill(self, bill_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch a specific bill from LegiScan API."""
+        if not self.legiscan_api_key:
+            self.log_thought("LegiScan API key not configured, skipping API call")
+            return None
+        try:
+            url = self.legiscan_base_url
+            params = {
+                "key": self.legiscan_api_key,
+                "op": "getBill",
+                "id": bill_id
+            }
+            response = requests.get(url, params=params, timeout=30)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("status") == "OK":
+                    bill_data = data.get("bill", {})
+                    # Normalize to our internal schema
+                    return {
+                        "bill_id": f"LEGISCAN-{bill_data.get('bill_id')}",
+                        "title": bill_data.get("title", ""),
+                        "sponsor": self._get_legiscan_sponsor_name(bill_data.get("sponsors", [])),
+                        "introduced_date": bill_data.get("introduced_date", ""),
+                        "latest_action": bill_data.get("last_action", ""),
+                        "url": bill_data.get("url", ""),
+                        "keywords": self._extract_keywords_from_legiscan_bill(bill_data),
+                        "relevance_score": 0.9
+                    }
+                else:
+                    self.log_thought(f"LegiScan API returned error: {data.get('message')}")
+            else:
+                self.log_thought(f"LegiScan API returned status {response.status_code}")
+        except Exception as e:
+            self.log_thought(f"Error fetching bill from LegiScan: {e}")
+        return None
+
+    def _search_legiscan_bills(self, query: str, state: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Search for bills on LegiScan API."""
+        if not self.legiscan_api_key:
+            self.log_thought("LegiScan API key not configured, skipping API call")
+            return []
+        try:
+            url = self.legiscan_base_url
+            params = {
+                "key": self.legiscan_api_key,
+                "op": "getSearchResults",
+                "query": query
+            }
+            if state:
+                params["state"] = state
+            response = requests.get(url, params=params, timeout=30)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("status") == "OK":
+                    # The search results are in data["result"]["summary"]
+                    bills = data.get("result", {}).get("summary", [])
+                    results = []
+                    for bill in bills:
+                        # Normalize each bill
+                        bill_info = {
+                            "bill_id": f"LEGISCAN-{bill.get('bill_id')}",
+                            "title": bill.get("title", ""),
+                            "sponsor": self._get_legiscan_sponsor_name(bill.get("sponsors", [])),
+                            "introduced_date": bill.get("introduced_date", ""),
+                            "latest_action": bill.get("last_action", ""),
+                            "url": bill.get("url", ""),
+                            "keywords": self._extract_keywords_from_legiscan_bill(bill),
+                            "relevance_score": 0.8
+                        }
+                        results.append(bill_info)
+                    return results
+                else:
+                    self.log_thought(f"LegiScan search API returned error: {data.get('message')}")
+            else:
+                self.log_thought(f"LegiScan search API returned status {response.status_code}")
+        except Exception as e:
+            self.log_thought(f"Error searching LegiScan: {e}")
+        return []
+
+    def _get_legiscan_sponsor_name(self, sponsors: List[Dict[str, Any]]) -> str:
+        """Extract sponsor name from sponsors list."""
+        if not sponsors:
+            return ""
+        # Get the first sponsor
+        sponsor = sponsors[0] if isinstance(sponsors, list) else {}
+        first_name = sponsor.get("firstName", "")
+        last_name = sponsor.get("lastName", "")
+        middle_name = sponsor.get("middleName", "")
+        name_parts = [first_name, middle_name, last_name]
+        return " ".join(part for part in name_parts if part).strip()
+
+    def _extract_keywords_from_legiscan_bill(self, bill: Dict[str, Any]) -> List[str]:
+        """Extract relevant keywords from bill data."""
+        keywords = []
+        bill_id = bill.get("bill_id")
+        if bill_id:
+            keywords.append(f"LEGISCAN-{bill_id}")
+        title = bill.get("title", "").lower()
+        # Add policy area if available
+        policy_area = bill.get("policyArea", "")
+        if policy_area:
+            keywords.append(policy_area.lower().replace(" ", "_"))
+        # Add subjects if available
+        subjects = bill.get("subjects", [])
+        if isinstance(subjects, list):
+            for subject in subjects:
+                if isinstance(subject, dict):
+                    subject_name = subject.get("name", "")
+                    if subject_name:
+                        keywords.append(subject_name.lower().replace(" ", "_"))
+                elif isinstance(subject, str):
+                    keywords.append(subject.lower().replace(" ", "_"))
+        # Add BNPL-related terms if present in title
+        bnpl_terms = ["buy now pay later", "bnpl", "installment loan", "point of sale", "pos lending"]
+        for term in bnpl_terms:
+            if term in title:
+                keywords.append(term.replace(" ", "_"))
+        return list(set(keywords))  # Remove duplicates
+
+    def _fetch_legislative_data(self, jurisdiction: str, product: str, lookback_hours: int) -> List[Dict[str, Any]]:
+        """Fetch legislative data from APIs based on jurisdiction and product."""
+        # In production mode, use real APIs. In development/mock, simulate.
+        if self.config.swarm_mode == "production":
+            self.log_thought(f"Fetching LEGISLATIVE data for {product} in {jurisdiction} (last {lookback_hours}h) from LIVE APIs")
+            
+            legislative_items = []
+            
+            if jurisdiction == "US Federal":
+                # Search for BNPL bills in current Congress (118th as of 2024)
+                congress = 118
+                query = "buy now pay later"
+                congressional_bills = self._search_congress_gov_bills(query, congress, limit=10)
+                legislative_items.extend(congressional_bills)
+                
+                # Also search for specific BNPL-related terms
+                query2 = "point of sale lending"
+                congressional_bills2 = self._search_congress_gov_bills(query2, congress, limit=5)
+                legislative_items.extend(congressional_bills2)
+                
+            elif jurisdiction == "California":
+                # Search for BNPL bills in California via LegiScan
+                query = "buy now pay later"
+                california_bills = self._search_legiscan_bills(query, state="CA")
+                legislative_items.extend(california_bills)
+                
+                # Also search for installment loans
+                query2 = "installment loan"
+                california_bills2 = self._search_legiscan_bills(query2, state="CA")
+                legislative_items.extend(california_bills2)
+                
+            else:
+                # For other jurisdictions, fall back to simulation for now
+                self.log_thought(f"Jurisdiction {jurisdiction} not implemented for live API, simulating")
+                legislative_items = self._simulate_legislative_data(jurisdiction, product, lookback_hours)
+                
+            # Remove duplicates based on bill_id
+            seen_ids = set()
+            unique_items = []
+            for item in legislative_items:
+                bid = item.get("bill_id")
+                if bid and bid not in seen_ids:
+                    seen_ids.add(bid)
+                    unique_items.append(item)
+                    
+            self.log_thought(f"Fetched {len(unique_items)} unique legislative items from live APIs")
+            return unique_items
+        else:
+            # Development/mock mode - simulate data
+            self.log_thought(f"Fetching legislative data for {product} in {jurisdiction} (last {lookback_hours}h) - SIMULATED")
+            return self._simulate_legislative_data(jurisdiction, product, lookback_hours)
+    
+    def _simulate_legislative_data(self, jurisdiction: str, product: str, lookback_hours: int) -> List[Dict[str, Any]]:
+        """Simulate legislative data for development/testing."""
+        self.log_thought(f"SIMULATING legislative data for {product} in {jurisdiction} (last {lookback_hours}h)")
+        
+        # Simulate fetching legislative data
+        legislative_items = []
+        
+        if jurisdiction == "US Federal":
+            # Simulate Congress.gov data
+            congressional_bills = [
+                {
+                    "bill_id": "HR-1234-118",
+                    "title": "Buy Now, Pay Later Consumer Protection Act",
+                    "sponsor": "Rep. Johnson (D-CA)",
+                    "introduced_date": "2023-01-15",
+                    "latest_action": "Referred to Committee on Financial Services",
+                    "url": "https://www.congress.gov/bill/118th-congress/house-bill/1234",
+                    "keywords": ["bnpl", "consumer_protection", "hr1234"],
+                    "relevance_score": 0.95
+                },
+                {
+                    "bill_id": "S-567-118",
+                    "title": "Buy Now, Pay Later Transparency Act",
+                    "sponsor": "Sen. Smith (D-NY)",
+                    "introduced_date": "2023-02-01",
+                    "latest_action": "Referred to Committee on Banking, Housing, and Urban Affairs",
+                    "url": "https://www.congress.gov/bill/118th-congress/senate-bill/567",
+                    "keywords": ["bnpl", "transparency", "s567"],
+                    "relevance_score": 0.9
+                }
+            ]
+            legislative_items.extend(congressional_bills)
+        
+        elif jurisdiction == "California":
+            # Simulate California legislature data
+            ca_bills = [
+                {
+                    "bill_id": "CA-AB-1234",
+                    "title": "California Buy Now, Pay Later Regulation Act",
+                    "sponsor": "Asm. Davis (D-LA)",
+                    "introduced_date": "2023-01-20",
+                    "latest_action": "Referred to Committee on Banking and Finance",
+                    "url": "https://leginfo.legislature.ca.gov/faces/billTextClient.xhtml?bill_id=202320240AB1234",
+                    "keywords": ["bnpl", "california", "regulation"],
+                    "relevance_score": 0.9
+                }
+            ]
+            legislative_items.extend(ca_bills)
+        
+        return legislative_items
+
+    def _analyze_legislative_items(self, legislative_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Analyze and score legislative items for relevance and impact."""
+        analyzed = []
+        for item in legislative_items:
+            # Calculate potential impact based on relevance score and keywords
+            relevance = item.get("relevance_score", 0.5)
+            keywords = item.get("keywords", [])
+            
+            # Boost score for BNPL-specific keywords
+            bnpl_keywords = ["bnpl", "buy_now_pay_later", "installment_loan", "point_of_sale", "pos_lending"]
+            bnpl_matches = sum(1 for kw in keywords if any(bnpl in kw for bnpl in bnpl_keywords))
+            impact_boost = min(bnpl_matches * 0.1, 0.3)  # Max 0.3 boost
+            
+            # Determine potential impact
+            adjusted_score = min(relevance + impact_boost, 1.0)
+            if adjusted_score >= 0.8:
+                potential_impact = "high"
+            elif adjusted_score >= 0.5:
+                potential_impact = "medium"
+            else:
+                potential_impact = "low"
+            
+            analyzed_item = {
+                **item,
+                "potential_impact": potential_impact,
+                "relevance_score": adjusted_score,
+                "analyzed_at": datetime.now(timezone.utc).isoformat()
+            }
+            analyzed.append(analyzed_item)
+        
+        # Sort by relevance score descending
+        analyzed.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+        return analyzed
+
+    def _store_legislative_results(self, analyzed_items: List[Dict[str, Any]], jurisdiction: str, product: str) -> Optional[str]:
+        """Store legislative monitoring results in Neo4j and return run ID."""
+        try:
+            with neo4j_session() as session:
+                # Create a legislative monitoring run node
+                run_id = str(uuid.uuid4())
+                timestamp = datetime.now(timezone.utc).isoformat()
+                
+                # Create the run node
+                query = """
+                CREATE (r:LegislativeMonitorRun {
+                    id: $run_id,
+                    timestamp: $timestamp,
+                    jurisdiction: $jurisdiction,
+                    product: $product,
+                    items_count: $items_count,
+                    relevant_count: $relevant_count
+                })
+                RETURN r
+                """
+                result = session.run(query, {
+                    "run_id": run_id,
+                    "timestamp": timestamp,
+                    "jurisdiction": jurisdiction,
+                    "product": product,
+                    "items_count": len(legislative_items),  # total fetched
+                    "relevant_count": len([i for i in analyzed_items if i.get("potential_impact") in ["high", "medium"]])
+                })
+                result.single()  # consume the result
+                
+                # Create items and relationships
+                for item in analyzed_items:
+                    item_query = """
+                    MATCH (r:LegislativeMonitorRun {id: $run_id})
+                    CREATE (i:LegislativeItem {
+                        id: $item_id,
+                        title: $title,
+                        sponsor: $sponsor,
+                        introduced_date: $introduced_date,
+                        latest_action: $latest_action,
+                        url: $url,
+                        keywords: $keywords,
+                        relevance_score: $relevance_score,
+                        potential_impact: $potential_impact
+                    })
+                    CREATE (r)-[:CONTAINS]->(i)
+                    """
+                    session.run(item_query, {
+                        "run_id": run_id,
+                        "item_id": item.get("bill_id"),
+                        "title": item.get("title"),
+                        "sponsor": item.get("sponsor"),
+                        "introduced_date": item.get("introduced_date"),
+                        "latest_action": item.get("latest_action"),
+                        "url": item.get("url"),
+                        "keywords": item.get("keywords"),
+                        "relevance_score": item.get("relevance_score"),
+                        "potential_impact": item.get("potential_impact")
+                    })
+                
+                return run_id
+        except Exception as e:
+            self.logger.error(f"Error storing legislative results: {e}")
+            return None
+
+    def _verify_legislative_storage(self, run_id: str) -> bool:
+        """Verify that the legislative monitoring run was stored in Neo4j by reading it back."""
+        try:
+            with neo4j_session() as session:
+                query = """
+                MATCH (r:LegislativeMonitorRun {id: $run_id})
+                RETURN r.id as run_id, COUNT{(r)-[:CONTAINS]->(i:LegislativeItem)} as item_count
+                """
+                result = session.run(query, {"run_id": run_id})
+                record = result.single()
+                if record and record["item_count"] > 0:
+                    return True
+                return False
+        except Exception as e:
+            self.logger.error(f"Error verifying legislative storage: {e}")
+            return False
+
+    def _monitor_legislation(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Monitor legislative activity for assigned jurisdictions and products."""
+        jurisdiction = task_data.get("jurisdiction", "US Federal")
+        product = task_data.get("product", "Buy Now, Pay Later")
+        lookback_hours = task_data.get("lookback_hours", 24)
+        
+        self.log_thought(f"Monitoring legislation for {product} in {jurisdiction} (last {lookback_hours}h)")
+        
+        # CRITICAL INSTRUCTION - DEDUPLICATION: Check if we've recently monitored this jurisdiction/product
+        lookup_key = f"leg_monitor:{jurisdiction}:{product}:{lookback_hours}"
+        recent_monitoring = self.check_redis_deduplication(lookup_key)
+        if recent_monitoring:
+            self.log_thought(f"Recent legislative monitoring found for {lookup_key}, checking for updates")
+            # Check if there's been significant change since last monitoring
+            last_run = recent_monitoring.get("completed_at")
+            if last_run:
+                try:
+                    last_run_dt = datetime.fromisoformat(last_run.replace('Z', '+00:00'))
+                    hours_since = (datetime.now(timezone.utc) - last_run_dt).total_seconds() / 3600
+                    
+                    if hours_since < 1:  # Less than 1 hour since last check
+                        self.log_thought(f"Recent check was {hours_since:.1f}h ago, returning cached result")
+                        return {
+                            "status": "cached",
+                            "agent_id": self.agent_id,
+                            "jurisdiction": jurisdiction,
+                            "product": product,
+                            "data_source": "cache",
+                            "cached_result": recent_monitoring,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                except Exception as e:
+                    self.log_thought(f"Error parsing timestamp: {e}")
+        
+        # Fetch legislative data from live APIs (in production) or simulation (in dev)
+        legislative_items = self._fetch_legislative_data(jurisdiction, product, lookback_hours)
+        
+        if not legislative_items:
+            self.log_thought(f"No legislative data found for {product} in {jurisdiction}")
+            return {
+                "status": "completed",
+                "agent_id": self.agent_id,
+                "jurisdiction": jurisdiction,
+                "product": product,
+                "legislative_items_found": 0,
+                "relevant_items": 0,
+                "analyzed_items": [],
+                "summary": "No legislative data found",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        
+        # Process and analyze the legislative items
+        analyzed_items = self._analyze_legislative_items(legislative_items)
+        
+        # Store results in Neo4j
+        run_id = self._store_legislative_results(analyzed_items, jurisdiction, product)
+        storage_success = run_id is not None
+        
+        # Read back to verify storage
+        verification_success = False
+        if storage_success:
+            verification_success = self._verify_legislative_storage(run_id)
+            if verification_success:
+                self.log_thought(f"Stored and verified {len(analyzed_items)} legislative items in Neo4j")
+            else:
+                self.log_thought(f"Stored but failed to verify legislative items in Neo4j")
+        
+        # Only mark as successful if storage and verification succeeded
+        if not (storage_success and verification_success):
+            return {
+                "status": "error",
+                "agent_id": self.agent_id,
+                "jurisdiction": jurisdiction,
+                "product": product,
+                "message": "Failed to store and verify legislative data in Neo4j",
+                "legislative_items_found": len(legislative_items),
+                "analyzed_items": analyzed_items,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        
+        # Generate summary
+        high_count = sum(1 for item in analyzed_items if item.get("potential_impact") == "high")
+        medium_count = sum(1 for item in analyzed_items if item.get("potential_impact") == "medium")
+        low_count = sum(1 for item in analyzed_items if item.get("potential_impact") == "low")
+        
+        summary_parts = []
+        if high_count > 0:
+            summary_parts.append(f"{high_count} high-impact items")
+        if medium_count > 0:
+            summary_parts.append(f"{medium_count} medium-impact items")
+        if low_count > 0:
+            summary_parts.append(f"{low_count} low-impact items")
+            
+        summary = f"Legislative monitoring found: {', '.join(summary_parts)}" if summary_parts else "No significant legislative activity detected"
+        
+        return {
+            "status": "success",
+            "agent_id": self.agent_id,
+            "jurisdiction": jurisdiction,
+            "product": product,
+            "legislative_items_found": len(legislative_items),
+            "relevant_items": len([i for i in analyzed_items if i.get("potential_impact") in ["high", "medium"]]),
+            "analyzed_items": analyzed_items,
+            "summary": summary,
+            "run_id": run_id,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    def _track_bill(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Track a specific bill through the legislative process."""
+        bill_id = task_data.get("bill_id", "")
+        jurisdiction = task_data.get("jurisdiction", "US Federal")
+        
+        self.log_thought(f"Tracking bill {bill_id} in {jurisdiction}")
+        
+        # In reality, this would set up continuous tracking of a specific bill
+        # For simulation, return tracking setup confirmation
+        
+        return {
+            "status": "success",
+            "agent_id": self.agent_id,
+            "bill_id": bill_id,
+            "jurisdiction": jurisdiction,
+            "tracking_established": True,
+            "tracking_frequency": "hourly",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    def _analyze_amendments(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze amendments to existing legislation."""
+        bill_id = task_data.get("bill_id", "")
+        amendment_text = task_data.get("amendment_text", "")
+        
+        self.log_thought(f"Analyzing amendments to bill {bill_id}")
+        
+        # In reality, this would analyze amendment text for impact
+        # For simulation, return basic analysis
+        
+        return {
+            "status": "success",
+            "agent_id": self.agent_id,
+            "bill_id": bill_id,
+            "amendment_analyzed": True,
+            "impact_assessment": "Analysis would be performed in production",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    def get_capabilities(self) -> List[str]:
+        """Return list of capabilities this agent provides."""
+        return [
+            "legislative_monitoring",
+            "bill_tracking",
+            "amendment_analysis",
+            "keyword_based_filtering",
+            "impact_assessment",
+            "deduplication_enforcement",
+            "graph_database_storage"
+        ]
+
+
+# Example usage
+if __name__ == "__main__":
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    
+    agent = LegislativeMonitorAgent()
+    
+    # Test legislative monitoring
+    result = agent.execute_task({
+        "type": "monitor_legislation",
+        "jurisdiction": "US Federal",
+        "product": "Buy Now, Pay Later",
+        "lookback_hours": 24
+    })
+    
+    print("Legislative monitoring result:")
+    print(f"Status: {result['status']}")
+    if result["status"] == "success":
+        print(f"Jurisdiction: {result.get('jurisdiction')}")
+        print(f"Product: {result.get('product')}")
+        print(f"Items found: {result.get('legislative_items_found')}")
+        print(f"Relevant items: {result.get('relevant_items')}")
+        print(f"Summary: {result.get('summary')}")
+        print(f"Run ID: {result.get('run_id')}")
+    elif result["status"] == "cached":
+        print(f"Returned cached result from: {result.get('cached_result', {}).get('timestamp')}")
+    else:
+        print(f"Error: {result.get('message')}")

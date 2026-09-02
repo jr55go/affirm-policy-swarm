@@ -1,0 +1,433 @@
+"""
+Policy Orchestrator Agent implementation.
+Responsible for task decomposition, priority scheduling, and human-in-the-loop escalation management.
+"""
+
+import time
+import uuid
+import os
+import sys
+from typing import Dict, Any, List, Optional
+from datetime import datetime, timezone
+
+# Add the project root to the Python path to allow absolute imports
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from infrastructure.config import load_config
+from infrastructure.database import neo4j_session
+from agents.legislative_monitor import LegislativeMonitorAgent
+from agents.base_agent import BaseAgent
+
+
+class PolicyOrchestratorAgent(BaseAgent):
+    """Orchestrator Agent for policy analysis task decomposition and scheduling."""
+    
+    def __init__(self, agent_id: str = None):
+        super().__init__(agent_id or f"policy-orchestrator-{str(uuid.uuid4())[:8]}", "Policy Orchestrator Agent")
+        self.task_queue: List[Dict[str, Any]] = []
+        self.active_tasks: Dict[str, Dict[str, Any]] = {}
+        self.completed_tasks: List[Dict[str, Any]] = []
+        self.failed_tasks: List[Dict[str, Any]] = []
+        self.config = load_config()
+        
+    def execute_task(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute orchestration tasks like task decomposition and scheduling."""
+        task_type = task_data.get("type", "unknown")
+        
+        self.log_thought(f"Orchestrator received task: {task_type}")
+        
+        if task_type == "decompose_objective":
+            return self._decompose_objective(task_data)
+        elif task_type == "schedule_tasks":
+            return self._schedule_tasks(task_data)
+        elif task_type == "monitor_progress":
+            return self._monitor_progress(task_data)
+        elif task_type == "escalate_to_human":
+            return self._escalate_to_human(task_data)
+        else:
+            return {
+                "status": "error",
+                "message": f"Unknown task type: {task_type}",
+                "agent_id": self.agent_id
+            }
+            
+    def _decompose_objective(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Decompose a high-level policy objective into actionable tasks."""
+        objective = task_data.get("objective", "")
+        scope = task_data.get("scope", {})
+        
+        print(f"DEBUG: scope sources: {scope.get('sources', [])}")
+        self.log_thought(f"Decomposing objective: {objective}")
+        
+        # In a real implementation, this would use the LLM to break down the objective
+        # For now, we'll return a structured decomposition based on policy domains
+        
+        # Define task types based on scope
+        task_types = []
+        if "legislative" in scope.get("sources", []):
+            task_types.append("legislative_monitoring")
+        if "regulatory" in scope.get("sources", []):
+            task_types.append("regulatory_watch")
+        if "research" in scope.get("sources", []):
+            task_types.append("research_synthesis")
+        if "judicial" in scope.get("sources", []):
+            task_types.append("judicial_monitoring")
+        if "stakeholder" in scope.get("sources", []):
+            task_types.append("stakeholder_mapping")
+        if "market_sentiment" in scope.get("sources", []):
+            task_types.append("monitor_market_sentiment")
+            
+        # Always include impact analysis and validation
+        task_types.extend(["impact_analysis", "validation", "reporting"])
+        
+        # Create tasks for each jurisdictional scope
+        tasks = []
+        jurisdictions = scope.get("jurisdictions", ["US Federal"])
+        products = scope.get("products", ["Buy Now, Pay Later"])
+        
+        for jurisdiction in jurisdictions:
+            for product in products:
+                for task_type in task_types:
+                    # Skip if task type doesn't apply to this jurisdiction/product combo
+                    if task_type == "judicial_monitoring" and jurisdiction not in ["US Federal", "All 50 States"]:
+                        continue
+                        
+                    task_id = str(uuid.uuid4())
+                    priority = self._determine_priority(task_type, jurisdiction, product)
+                    
+                    task = {
+                        "id": task_id,
+                        "type": task_type,
+                        "description": f"{task_type.replace('_', ' ').title()} for {product} in {jurisdiction}",
+                        "jurisdiction": jurisdiction,
+                        "product": product,
+                        "priority": priority,
+                        "assigned_agent_type": self._get_agent_type_for_task(task_type),
+                        "dependencies": self._get_task_dependencies(task_type),
+                        "estimated_duration": self._estimate_task_duration(task_type),
+                        "created_at": datetime.now(timezone.utc).isoformat()
+                    }
+                    
+                    tasks.append(task)
+        
+        # Add tasks to queue
+        self.task_queue.extend(tasks)
+        
+        self.log_thought(f"Decomposed objective into {len(tasks)} tasks")
+        
+        return {
+            "status": "success",
+            "agent_id": self.agent_id,
+            "objective": objective,
+            "scope": scope,
+            "decomposed_tasks": tasks,
+            "total_tasks": len(tasks),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    def _determine_priority(self, task_type: str, jurisdiction: str, product: str) -> str:
+        """Determine task priority based on type, jurisdiction, and product."""
+        # High priority tasks
+        high_priority_types = ["impact_analysis", "validation"]
+        high_priority_jurisdictions = ["US Federal"]  # Federal law affects all products
+        
+        if task_type in high_priority_types or jurisdiction in high_priority_jurisdictions:
+            return "high"
+            
+        # Medium priority for research and stakeholder mapping
+        medium_priority_types = ["research_synthesis", "stakeholder_mapping", "regulatory_watch"]
+        if task_type in medium_priority_types:
+            return "medium"
+            
+        # Low priority for routine monitoring
+        return "low"
+        
+    def _get_agent_type_for_task(self, task_type: str) -> str:
+        """Map task type to agent type."""
+        mapping = {
+            "legislative_monitoring": "legislative_monitor",
+            "regulatory_watch": "regulatory_watch",
+            "research_synthesis": "research_synthesis_agent",
+            "judicial_monitoring": "judicial_monitor",
+            "stakeholder_mapping": "stakeholder_mapper",
+            "impact_analysis": "impact_analyzer",
+            "validation": "validation_agent",
+            "reporting": "reporting_agent",
+            "monitor_market_sentiment": "market_sentiment_agent",
+        }
+        return mapping.get(task_type, "unknown_agent")
+        
+    def _get_task_dependencies(self, task_type: str) -> List[str]:
+        """Get dependencies for a task type."""
+        # Define dependency graph
+        dependencies = {
+            "legislative_monitoring": [],
+            "regulatory_watch": [],
+            "research_synthesis": [],
+            "judicial_monitoring": [],
+            "stakeholder_mapping": [],
+            "impact_analysis": ["legislative_monitoring", "regulatory_watch", "research_synthesis", "monitor_market_sentiment"],  # Needs policy inputs
+            "validation": ["impact_analysis"],  # Validates impact analysis
+            "reporting": ["validation"]  # Reports validated results
+        }
+        return dependencies.get(task_type, [])
+        
+    def _estimate_task_duration(self, task_type: str) -> int:
+        """Estimate task duration in seconds."""
+        # Rough estimates - would be refined based on historical data
+        durations = {
+            "legislative_monitoring": 300,   # 5 minutes
+            "regulatory_watch": 300,         # 5 minutes
+            "research_synthesis": 600,       # 10 minutes
+            "judicial_monitoring": 180,      # 3 minutes
+            "stakeholder_mapping": 240,      # 4 minutes
+            "impact_analysis": 900,          # 15 minutes (LLM processing)
+            "validation": 300,               # 5 minutes
+            "reporting": 120                 # 2 minutes
+        }
+        return durations.get(task_type, 300)
+        
+    def _schedule_tasks(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Schedule tasks based on priority, dependencies, and agent availability."""
+        self.log_thought("Scheduling tasks from queue")
+        
+        # Filter tasks that have no unsatisfied dependencies
+        schedulable_tasks = []
+        for task in self.task_queue:
+            task_id = task["id"]
+            dependencies = task.get("dependencies", [])
+            
+            # Check if all dependencies are completed
+            dependencies_satisfied = True
+            for dep_type in dependencies:
+                # Find if any completed task satisfies this dependency type
+                dep_satisfied = any(
+                    completed_task.get("type") == dep_type 
+                    for completed_task in self.completed_tasks
+                )
+                if not dep_satisfied:
+                    dependencies_satisfied = False
+                    break
+                    
+            if dependencies_satisfied and task_id not in self.active_tasks:
+                schedulable_tasks.append(task)
+        
+        # Sort by priority (high > medium > low) then by creation time (FIFO)
+        priority_weights = {"high": 3, "medium": 2, "low": 1}
+        schedulable_tasks.sort(
+            key=lambda x: (
+                priority_weights.get(x.get("priority", "low"), 0),
+                x.get("created_at", "")  # Earlier creation time = higher priority
+            ),
+            reverse=True
+        )
+        
+        # Move tasks from queue to active based on agent capacity
+        max_concurrent = self.config.max_concurrent_agents
+        scheduled = []
+        
+        for task in schedulable_tasks[:max_concurrent]:
+            if task["id"] not in self.active_tasks:
+                task["status"] = "scheduled"
+                task["scheduled_at"] = datetime.now(timezone.utc).isoformat()
+                self.active_tasks[task["id"]] = task
+                scheduled.append(task)
+                
+        # Remove scheduled tasks from queue
+        self.task_queue = [t for t in self.task_queue if t["id"] not in [s["id"] for s in scheduled]]
+        
+        self.log_thought(f"Scheduled {len(scheduled)} tasks, {len(self.task_queue)} remaining in queue")
+        
+        return {
+            "status": "success",
+            "agent_id": self.agent_id,
+            "scheduled_tasks": scheduled,
+            "remaining_queue_length": len(self.task_queue),
+            "active_tasks_count": len(self.active_tasks),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    def _monitor_progress(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Monitor progress of active tasks by delegating to agents."""
+        self.log_thought("Monitoring task progress by delegating to agents")
+        
+        # Update task statuses by checking with actual agents
+        completed_task_ids = []
+        failed_task_ids = []
+        
+        for task_id, task in list(self.active_tasks.items()):
+            # In production mode, delegate to actual agents
+            if self.config.swarm_mode == "production":
+                try:
+                    # Get the appropriate agent for this task type
+                    agent_type = task.get("assigned_agent_type")
+                    if agent_type == "legislative_monitor":
+                        agent = LegislativeMonitorAgent()
+                        # Execute the task with the agent
+                        result = agent.execute_task({
+                            "type": task.get("type"),
+                            "jurisdiction": task.get("jurisdiction"),
+                            "product": task.get("product"),
+                            "lookback_hours": 24
+                        })
+                        
+                        # Check the result
+                        if result.get("status") == "success":
+                            task["status"] = "completed"
+                            task["completed_at"] = datetime.now(timezone.utc).isoformat()
+                            task["result"] = result
+                            completed_task_ids.append(task_id)
+                        else:
+                            task["status"] = "failed"
+                            task["failed_at"] = datetime.now(timezone.utc).isoformat()
+                            task["failure_reason"] = result.get("message", "Unknown error")
+                            failed_task_ids.append(task_id)
+                            
+                    else:
+                        # For other agent types, simulate for now (would be implemented similarly)
+                        # Simulate random completion/failure for demo purposes
+                        import random
+                        rand_val = random.random()
+                        if rand_val > 0.8:  # 20% chance of completion
+                            task["status"] = "completed"
+                            task["completed_at"] = datetime.now(timezone.utc).isoformat()
+                            completed_task_ids.append(task_id)
+                        elif rand_val < 0.05:  # 5% chance of failure
+                            task["status"] = "failed"
+                            task["failed_at"] = datetime.now(timezone.utc).isoformat()
+                            task["failure_reason"] = "Simulated failure for demo"
+                            failed_task_ids.append(task_id)
+                        # Otherwise remain in_progress
+                except Exception as e:
+                    self.log_thought(f"Error executing task {task_id}: {e}")
+                    task["status"] = "failed"
+                    task["failed_at"] = datetime.now(timezone.utc).isoformat()
+                    task["failure_reason"] = str(e)
+                    failed_task_ids.append(task_id)
+            else:
+                # Development/mock mode - simulate task progress
+                if task.get("status") == "scheduled":
+                    task["status"] = "in_progress"
+                    task["started_at"] = datetime.now(timezone.utc).isoformat()
+                elif task.get("status") == "in_progress":
+                    # Simulate random completion/failure for demo purposes
+                    import random
+                    rand_val = random.random()
+                    if rand_val > 0.8:  # 20% chance of completion
+                        task["status"] = "completed"
+                        task["completed_at"] = datetime.now(timezone.utc).isoformat()
+                        completed_task_ids.append(task_id)
+                    elif rand_val < 0.05:  # 5% chance of failure
+                        task["status"] = "failed"
+                        task["failed_at"] = datetime.now(timezone.utc).isoformat()
+                        task["failure_reason"] = "Simulated failure for demo"
+                        failed_task_ids.append(task_id)
+                    # Otherwise remain in_progress
+        
+        # Move completed tasks to completed list
+        for task_id in completed_task_ids:
+            task = self.active_tasks.pop(task_id)
+            self.completed_tasks.append(task)
+            
+        # Move failed tasks to failed list
+        for task_id in failed_task_ids:
+            task = self.active_tasks.pop(task_id)
+            self.failed_tasks.append(task)
+            
+        # Generate monitoring report
+        return {
+            "status": "success",
+            "agent_id": self.agent_id,
+            "active_tasks": len(self.active_tasks),
+            "completed_tasks": len(self.completed_tasks),
+            "failed_tasks": len(self.failed_tasks),
+            "queue_length": len(self.task_queue),
+            "recently_completed": [
+                {
+                    "id": t["id"],
+                    "type": t["type"],
+                    "jurisdiction": t.get("jurisdiction"),
+                    "product": t.get("product"),
+                    "completed_at": t.get("completed_at")
+                }
+                for t in self.completed_tasks[-10:]  # Last 10 completed
+            ],
+            "recently_failed": [
+                {
+                    "id": t["id"],
+                    "type": t["type"],
+                    "jurisdiction": t.get("jurisdiction"),
+                    "product": t.get("product"),
+                    "failed_at": t.get("failed_at"),
+                    "failure_reason": t.get("failure_reason")
+                }
+                for t in self.failed_tasks[-5:]  # Last 5 failed
+            ],
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    def _escalate_to_human(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Escalate to human for approval or intervention."""
+        reason = task_data.get("reason", "Unknown")
+        risk_level = task_data.get("risk_level", "medium")
+        policy_impact = task_data.get("policy_impact", "unknown")
+        
+        self.log_thought(f"Escalating to human: {reason} (risk: {risk_level}, impact: {policy_impact})")
+        
+        # In a real implementation, this would trigger a notification system
+        escalation_id = str(uuid.uuid4())
+        
+        return {
+            "status": "escalated",
+            "agent_id": self.agent_id,
+            "escalation_id": escalation_id,
+            "reason": reason,
+            "risk_level": risk_level,
+            "policy_impact": policy_impact,
+            "requires_human_approval": True,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    def get_capabilities(self) -> List[str]:
+        """Return list of capabilities this agent provides."""
+        return [
+            "task_decomposition",
+            "priority_scheduling",
+            "dependency_resolution",
+            "human_escalation_management",
+            "progress_monitoring",
+            "policy_domain_routing"
+        ]
+
+
+# Example usage
+if __name__ == "__main__":
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    
+    orchestrator = PolicyOrchestratorAgent()
+    
+    # Test decomposing an objective
+    result = orchestrator.execute_task({
+        "type": "decompose_objective",
+        "objective": "Monitor Affirm BNPL product policy landscape",
+        "scope": {
+            "products": ["Buy Now, Pay Later"],
+            "jurisdictions": ["US Federal", "California"],
+            "sources": ["legislative", "regulatory", "research"]
+        }
+    })
+    
+    print("Decomposition result:")
+    print(f"Status: {result['status']}")
+    print(f"Tasks created: {len(result.get('decomposed_tasks', []))}")
+    for task in result.get('decomposed_tasks', [])[:3]:  # Show first 3
+        print(f"  - {task['description']} [{task['priority']}]")
+    
+    # Test scheduling
+    schedule_result = orchestrator.execute_task({"type": "schedule_tasks"})
+    print("\nScheduling result:")
+    print(f"Scheduled tasks: {len(schedule_result.get('scheduled_tasks', []))}")

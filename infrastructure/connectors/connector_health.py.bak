@@ -1,0 +1,67 @@
+from enum import Enum
+from datetime import datetime
+from typing import Dict, Any, Optional
+
+
+class ConnectorStatus(Enum):
+    """Enumeration of possible connector health states."""
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    OFFLINE = "offline"
+    AUTH_FAILED = "auth_failed"
+    RATE_LIMITED = "rate_limited"
+    SCHEMA_CHANGED = "schema_changed"
+    UNAVAILABLE = "unavailable"
+
+
+class HealthTracker:
+    """Tracks and reports the health status of a connector."""
+
+    def __init__(self, connector_name: str):
+        self.connector_name = connector_name
+        self.status: ConnectorStatus = ConnectorStatus.UNAVAILABLE  # Start as unavailable until checked
+        self.last_success: Optional[datetime] = None
+        self.last_failure: Optional[datetime] = None
+        self.failure_count: int = 0
+        self.last_error: Optional[str] = None
+
+    def update_health(self, status: ConnectorStatus, error_message: Optional[str] = None) -> None:
+        """Update the health status of the connector.
+        
+        Args:
+            status: The new health status
+            error_message: Optional error message if status indicates failure
+        """
+        self.status = status
+        if status == ConnectorStatus.HEALTHY:
+            self.last_success = datetime.now()
+            self.failure_count = 0
+            self.last_error = None
+        else:
+            self.last_failure = datetime.now()
+            self.failure_count += 1
+            if error_message:
+                self.last_error = error_message
+
+    def get_health_dict(self) -> Dict[str, Any]:
+        """Get a dictionary representation of the health status for reporting.
+        
+        Returns:
+            Dict[str, Any]: Health status information suitable for JSON serialization
+        """
+        return {
+            "connector": self.connector_name,
+            "status": self.status.value,
+            "last_success": self.last_success.isoformat() if self.last_success else None,
+            "last_failure": self.last_failure.isoformat() if self.last_failure else None,
+            "failure_count": self.failure_count,
+            "last_error": self.last_error
+        }
+
+    def is_healthy(self) -> bool:
+        """Check if the connector is currently healthy.
+        
+        Returns:
+            bool: True if status is HEALTHY, False otherwise
+        """
+        return self.status == ConnectorStatus.HEALTHY

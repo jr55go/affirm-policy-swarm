@@ -1,0 +1,125 @@
+import logging
+import random
+import re
+import subprocess
+import time
+from urllib.parse import quote_plus, unquote
+from playwright.sync_api import sync_playwright
+from playwright_stealth import stealth_sync
+
+class DiscoveryAgent:
+    def __init__(self, agent_id="discovery_agent", model="qwen"):
+        self.agent_id = agent_id
+        self.model = model
+
+    def gatekeeper_check(self, query, text_snippet):
+        """Scores a text snippet 1-10 on regulatory risk/momentum using local LLM."""
+        prompt = (
+            f"Analyze this snippet regarding '{query}'. Score 1-10 on regulatory"
+            " risk/momentum. Reply ONLY with the integer score inside XML tags, like"
+            f" <SCORE>7</SCORE>. Snippet: {text_snippet[:1000]}"
+        )
+        try:
+            res = subprocess.run(
+                ["ollama", "run", self.model],
+                input=prompt.encode("utf-8"),
+                capture_output=True,
+            )
+            match = re.search(
+                r"<SCORE>\s*([0-9]+)\s*</SCORE>",
+                res.stdout.decode("utf-8"),
+                re.IGNORECASE,
+            )
+            return min(10, int(match.group(1))) if match else 0
+        except Exception as e:
+            logging.error(f"Gatekeeper check error: {e}")
+            return 0
+
+    def perform_search(self, query):
+        """Executes search via direct Playwright navigation to Yahoo Search."""
+        results = []
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36"
+                )
+                page = context.new_page()
+                stealth_sync(page)
+
+                clean_query = re.sub(
+                    r'^(What|How|To what extent|Are there|Why).*?(changes|regulations|risks|attitudes|violations).*?(towards|for|in|with) ?',
+                    '',
+                    query,
+                    flags=re.IGNORECASE
+                )
+                
+                search_url = f"https://search.yahoo.com/search?p={quote_plus(clean_query)}"
+
+                try:
+                    page.goto(search_url, timeout=15000, wait_until="domcontentloaded")
+                    time.sleep(2.0)
+
+                    for el in page.query_selector_all(".algo")[:5]:
+                        t = el.query_selector("h3 a")
+                        s = el.query_selector(".compText, .fc-falcon")
+                        if t and s:
+                            title_text = t.inner_text().strip()
+                            snippet_text = s.inner_text().strip()
+                            href = t.get_attribute("href")
+                            if href and title_text and "yahoo.com" not in href:
+                                results.append({
+                                    "title": title_text,
+                                    "snippet": snippet_text,
+                                    "url": href,
+                                })
+                except Exception as select_err:
+                    logging.warning(f"Navigation/Selector timeout handled: {select_err}")
+
+                if not results:
+                    try:
+                        for a in page.query_selector_all("a"):
+                            text = a.inner_text().strip()
+                            href = a.get_attribute("href") or ""
+                            if len(text) > 30 and 'http' in href and "yahoo.com" not in href:
+                                results.append({"title": text[:60]+"...", "snippet": text, "url": href})
+                                if len(results) >= 5:
+                                    break
+                    except Exception:
+                        pass
+
+                browser.close()
+        except Exception as e:
+            logging.error(f"Chromium error during perform_search: {e}")
+        return results
+
+    def execute_task(self, task_data):
+        queries = task_data.get("queries", [])
+        records = []
+
+        clusters = [
+            " site:consumerfinance.gov",
+            " site:dfs.ny.gov",
+            " site:americanbanker.com",
+        ]
+
+        for q in queries:
+            base_kw = " ".join(q.split()[:6])
+            for cluster in clusters:
+                target_query = f"{base_kw}{cluster}"
+                logging.info(f"[{self.agent_id}] Vectoring Search: {target_query}")
+                
+                time.sleep(random.uniform(2.0, 4.0))
+                search_hits = self.perform_search(target_query)
+                
+                for r in search_hits:
+                    score = self.gatekeeper_check(q, r["snippet"])
+                    if score >= 6:
+                        logging.info(f"[{self.agent_id}] Target Acquired! (Score: {score}) -> {r['url']}")
+                        r["relevance_score"] = score
+                        records.append(r)
+                    else:
+                        logging.info(f"[{self.agent_id}] Target Discarded (Score: {score}) -> {r['url']}")
+
+        logging.info(f"[{self.agent_id}] Discovery complete. Acquired {len(records)} verified records.")
+        return {"records": records}

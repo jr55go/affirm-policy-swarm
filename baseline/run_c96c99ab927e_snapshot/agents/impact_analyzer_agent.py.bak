@@ -1,0 +1,309 @@
+"""
+Impact Analyzer Agent for Affirm Policy Swarm.
+Analyzes the potential impact of policy changes on various stakeholders.
+"""
+
+import abc
+import logging
+import json
+import time
+import uuid
+from typing import Dict, Any, List, Optional
+from datetime import datetime, timezone
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from load_swarm_jobs import load_swarm_jobs
+
+from .base_agent import BaseAgent
+from infrastructure.config import load_config
+from infrastructure.database import neo4j_session
+
+
+class ImpactAnalyzerAgent(BaseAgent):
+    """Agent responsible for analyzing policy impact."""
+    
+    def __init__(self, agent_id: str = None):
+        super().__init__(agent_id or f"ImpactAnalyzerAgent-{str(uuid.uuid4())[:8]}", "ImpactAnalyzerAgent")
+        self.config = load_config()
+        
+    def execute_task(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute impact analysis tasks."""
+        task_type = task_data.get("type", "unknown")
+        
+        self.log_thought(f"Impact Analyzer agent received task: {task_type}")
+        
+        if task_type == "analyze_policy_impact":
+            return self._analyze_policy_impact(task_data)
+        elif task_type == "assess_economic_impact":
+            return self._assess_economic_impact(task_data)
+        elif task_type == "assess_social_impact":
+            return self._assess_social_impact(task_data)
+        elif task_type == "assess_environmental_impact":
+            return self._assess_environmental_impact(task_data)
+        else:
+            return {
+                "status": "error",
+                "message": f"Unknown task type: {task_type}",
+                "agent_id": self.agent_id
+            }
+            
+    def _analyze_policy_impact(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze the overall impact of a policy change."""
+        policy_id = task_data.get("policy_id", "")
+        policy_description = task_data.get("policy_description", "")
+        jurisdiction = task_data.get("jurisdiction", "US Federal")
+        affected_products = task_data.get("affected_products", ["Buy Now, Pay Later"])
+        
+        self.log_thought(f"Analyzing policy impact for {policy_id} in {jurisdiction}")
+        
+        # CRITICAL INSTRUCTION - DEDUPLICATION: Check if we've recently analyzed this policy
+        lookup_key = f"impact_analysis:{policy_id}:{jurisdiction}"
+        recent_analysis = self.check_redis_deduplication(lookup_key)
+        if recent_analysis:
+            self.log_thought(f"Recent impact analysis found for {lookup_key}, returning cached result")
+            return {
+                "status": "cached",
+                "agent_id": self.agent_id,
+                "policy_id": policy_id,
+                "jurisdiction": jurisdiction,
+                "data_source": "cache",
+                "cached_result": recent_analysis,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        
+        # In a real implementation, this would:
+        # 1. Fetch policy details from legislative/regulatory sources
+        # 2. Identify affected stakeholders and industries
+        # 3. Run economic, social, and environmental impact models
+        # 4. Synthesize results into impact assessment
+        
+        # For now, we'll simulate the analysis process
+        economic_impact = self._assess_economic_impact({
+            "policy_id": policy_id,
+            "jurisdiction": jurisdiction,
+            "affected_products": affected_products
+        })
+        
+        social_impact = self._assess_social_impact({
+            "policy_id": policy_id,
+            "jurisdiction": jurisdiction,
+            "affected_products": affected_products
+        })
+        
+        environmental_impact = self._assess_environmental_impact({
+            "policy_id": policy_id,
+            "jurisdiction": jurisdiction,
+            "affected_products": affected_products
+        })
+        
+        # Synthesize impacts
+        overall_impact_score = (
+            economic_impact.get("impact_score", 0.0) * 0.4 +
+            social_impact.get("impact_score", 0.0) * 0.3 +
+            environmental_impact.get("impact_score", 0.0) * 0.3
+        )
+        
+        # Store results in graph database for future reference
+        self._store_impact_results(policy_id, jurisdiction, {
+            "economic_impact": economic_impact,
+            "social_impact": social_impact,
+            "environmental_impact": environmental_impact,
+            "overall_impact_score": overall_impact_score
+        })
+        
+        # Store analysis result in Redis for deduplication
+        analysis_result = {
+            "policy_id": policy_id,
+            "jurisdiction": jurisdiction,
+            "affected_products": affected_products,
+            "economic_impact": economic_impact,
+            "social_impact": social_impact,
+            "environmental_impact": environmental_impact,
+            "overall_impact_score": overall_impact_score,
+            "completed_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        self.store_redis_deduplication(lookup_key, analysis_result, 
+                                     expire_seconds=self.config.deduplication_window_hours * 3600)
+        
+        return {
+            "status": "success",
+            "agent_id": self.agent_id,
+            "policy_id": policy_id,
+            "jurisdiction": jurisdiction,
+            "affected_products": affected_products,
+            "economic_impact": economic_impact,
+            "social_impact": social_impact,
+            "environmental_impact": environmental_impact,
+            "overall_impact_score": overall_impact_score,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    def _assess_economic_impact(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Assess economic impact of policy change."""
+        policy_id = task_data.get("policy_id", "")
+        jurisdiction = task_data.get("jurisdiction", "US Federal")
+        affected_products = task_data.get("affected_products", ["Buy Now, Pay Later"])
+        
+        self.log_thought(f"Assessing economic impact for {policy_id}")
+        
+        # In reality, this would use economic models and data
+        # For simulation, return plausible economic impact data
+        
+        # Simulate some economic metrics
+        gdp_impact = 0.001  # 0.1% GDP change
+        employment_impact = -500  # 500 jobs lost (negative) or gained (positive)
+        consumer_cost_change = 2.5  # $2.50 average cost change per consumer
+        
+        impact_score = min(1.0, abs(gdp_impact) * 100 + abs(employment_impact) / 10000 + abs(consumer_cost_change) / 100)
+        
+        return {
+            "status": "success",
+            "agent_id": self.agent_id,
+            "analysis_type": "economic_impact",
+            "policy_id": policy_id,
+            "jurisdiction": jurisdiction,
+            "gdp_impact_percent": gdp_impact,
+            "employment_impact": employment_impact,
+            "consumer_cost_change_usd": consumer_cost_change,
+            "impact_score": impact_score,
+            "confidence": 0.75,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    def _assess_social_impact(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Assess social impact of policy change."""
+        policy_id = task_data.get("policy_id", "")
+        jurisdiction = task_data.get("jurisdiction", "US Federal")
+        affected_products = task_data.get("affected_products", ["Buy Now, Pay Later"])
+        
+        self.log_thought(f"Assessing social impact for {policy_id}")
+        
+        # In reality, this would use social indicators and surveys
+        # For simulation, return plausible social impact data
+        
+        # Simulate some social metrics
+        consumer_protection_score = 0.7  # 0-1 scale, higher is better protection
+        financial_inclusion_impact = 0.05  # 5% change in financial inclusion
+        vulnerable_population_effect = -0.1  # Negative impact on vulnerable populations
+        
+        impact_score = (consumer_protection_score + abs(financial_inclusion_impact) + abs(vulnerable_population_effect)) / 3
+        
+        return {
+            "status": "success",
+            "agent_id": self.agent_id,
+            "analysis_type": "social_impact",
+            "policy_id": policy_id,
+            "jurisdiction": jurisdiction,
+            "consumer_protection_score": consumer_protection_score,
+            "financial_inclusion_impact": financial_inclusion_impact,
+            "vulnerable_population_effect": vulnerable_population_effect,
+            "impact_score": impact_score,
+            "confidence": 0.7,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    def _assess_environmental_impact(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Assess environmental impact of policy change."""
+        policy_id = task_data.get("policy_id", "")
+        jurisdiction = task_data.get("jurisdiction", "US Federal")
+        affected_products = task_data.get("affected_products", ["Buy Now, Pay Later"])
+        
+        self.log_thought(f"Assessing environmental impact for {policy_id}")
+        
+        # Policy changes affecting financial products typically have minimal direct environmental impact
+        # but may have indirect effects through economic activity changes
+        
+        # For simulation, return minimal environmental impact (as expected for financial policy)
+        carbon_impact = 0.0001  # Very small carbon footprint change
+        waste_impact = 0.0      # No significant waste impact
+        resource_use_impact = 0.001  # Minimal resource use change
+        
+        impact_score = (carbon_impact * 1000 + waste_impact * 100 + resource_use_impact * 1000) / 3  # Scale appropriately
+        
+        return {
+            "status": "success",
+            "agent_id": self.agent_id,
+            "analysis_type": "environmental_impact",
+            "policy_id": policy_id,
+            "jurisdiction": jurisdiction,
+            "carbon_impact": carbon_impact,
+            "waste_impact": waste_impact,
+            "resource_use_impact": resource_use_impact,
+            "impact_score": impact_score,
+            "confidence": 0.8,  # High confidence in low impact assessment
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    def _store_impact_results(self, policy_id: str, jurisdiction: str, impact_data: Dict[str, Any]) -> bool:
+        """Store impact analysis results in the graph database."""
+        if not self.neo4j_driver:
+            self.logger.warning("Neo4j driver not available")
+            return False
+            
+        try:
+            with neo4j_session() as session:
+                query = """
+                MERGE (n:ImpactAnalysis {policy_id: $policy_id, jurisdiction: $jurisdiction})
+                SET n.data = $data,
+                    n.updated_at = $updated_at
+                RETURN n.node_id as node_id
+                """
+                result = session.run(query, 
+                                   policy_id=policy_id,
+                                   jurisdiction=jurisdiction,
+                                   data=json.dumps(impact_data),
+                                   updated_at=datetime.now(timezone.utc).isoformat())
+                record = result.single()
+                
+                if record:
+                    self.logger.debug(f"Stored impact analysis for {policy_id}: {record['node_id']}")
+                    return True
+                return False
+        except Exception as e:
+            self.logger.error(f"Error storing impact analysis for {policy_id}: {e}")
+            return False
+            
+    def get_capabilities(self) -> List[str]:
+        """Return list of impact analysis capabilities."""
+        return [
+            "policy_impact_assessment",
+            "economic_impact_modeling",
+            "social_impact_evaluation",
+            "environmental_impact_scoring",
+            "stakeholder_analysis",
+            "cost_benefit_analysis",
+            "risk_assessment",
+            "mitigation_strategy_generation",
+            "impact_synthesis",
+            "deduplication_enforcement",
+            "graph_database_storage"
+        ]
+
+
+# Example usage and testing
+if __name__ == "__main__":
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    
+    agent = ImpactAnalyzerAgent()
+    
+    # Test policy impact analysis
+    result = agent.execute_task({
+        "type": "analyze_policy_impact",
+        "policy_id": "CFPB-2024-BNPL-001",
+        "policy_description": "Proposed regulation on Buy Now, Pay Later services requiring clearer disclosures and payment limits",
+        "jurisdiction": "US Federal",
+        "affected_products": ["Buy Now, Pay Later", "Point-of-sale financing"]
+    })
+    
+    print("Impact analysis result:")
+    print(f"Status: {result['status']}")
+    print(f"Policy ID: {result.get('policy_id')}")
+    print(f"Jurisdiction: {result.get('jurisdiction')}")
+    print(f"Overall Impact Score: {result.get('overall_impact_score', 0):.3f}")
+    print(f"Economic Impact: {result.get('economic_impact', {}).get('impact_score', 0):.3f}")
+    print(f"Social Impact: {result.get('social_impact', {}).get('impact_score', 0):.3f}")
+    print(f"Environmental Impact: {result.get('environmental_impact', {}).get('impact_score', 0):.3f}")

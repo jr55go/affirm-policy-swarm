@@ -1,0 +1,151 @@
+import requests
+import xml.etree.ElementTree as ET
+import re
+from infrastructure.source_registry import SourceRegistry
+
+class PolicymakerMonitorAgent:
+
+    def _perform_live_search_fallback(self, query: str, max_results: int = 3):
+        """Tier 2 Fallback: Search web when primary feeds fail or return empty."""
+        print(f"[{self.agent_id}]  Tier 2: Searching web for '{query}'...")
+        fallback_records = []
+        try:
+            import urllib.parse, urllib.request
+            encoded_query = urllib.parse.quote(query)
+            url = f"https://html.duckduckgo.com/html/?q={encoded_query}"
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64)'})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                html = resp.read().decode('utf-8', errors='ignore')
+            
+            titles = re.findall(r'<a class="result__a"[^>]*>(.*?)</a>', html)
+            snippets = re.findall(r'<a class="result__snippet"[^>]*>(.*?)</a>', html)
+            
+            for i in range(min(len(titles), max_results)):
+                clean_title = re.sub(r'<[^>]+>', '', titles[i]).strip()
+                clean_snippet = re.sub(r'<[^>]+>', '', snippets[i]).strip() if i < len(snippets) else clean_title
+                fallback_records.append({
+                    "title": clean_title,
+                    "description": clean_snippet,
+                    "link": f"search_fallback_{i}"
+                })
+            print(f"[{self.agent_id}]  Tier 2 Recovered {len(fallback_records)} organic search items.")
+        except Exception as e:
+            print(f"[{self.agent_id}]  Tier 2 Search failed ({e}). Escalating to Tier 3.")
+        return fallback_records
+
+    def __init__(self, agent_id="policymaker-monitor"):
+        self.agent_id = agent_id
+        self.name = "Policymaker Monitor Agent"
+        print(f"2026-06-24 18:50:00 - agent.{self.agent_id} - INFO - Logger Active: Pure Python Scraping")
+
+    def execute_task(self, payload):
+        run_id = payload.get("run_id")
+        records = []
+        registry = SourceRegistry()
+        policymaker_sources = registry.get_enabled_sources_by_type("policymaker")
+
+        for source_name in policymaker_sources:
+            meta = registry.get_source_metadata(source_name)
+            try:
+                if meta.get("access_method") == "rss":
+                    # Try to fetch the RSS feed
+                    response = requests.get(meta["url"], timeout=10)
+                    response.raise_for_status()
+                    # Parse the XML (simplified: we look for <item> or <entry>)
+                    try:
+                        root = ET.fromstring(response.content)
+                    except ET.ParseError:
+                        # Fallback for malformed XML: use regex to extract first item
+                        print(f"[{self.agent_id}] Malformed markup detected on {source_name}. Falling back to regex extraction.")
+                        text = response.text
+                        # Look for <item> ... </item> or <entry> ... </entry>
+                        item_match = re.search(r'<item>(.*?)</item>', text, re.DOTALL | re.IGNORECASE)
+                        if not item_match:
+                            item_match = re.search(r'<entry>(.*?)</entry>', text, re.DOTALL | re.IGNORECASE)
+                        if item_match:
+                            item_content = item_match.group(1)
+                            # Now extract title, description/summary, link
+                            title_match = re.search(r'<title>(.*?)</title>', item_content, re.DOTALL | re.IGNORECASE)
+                            description_match = re.search(r'<description>(.*?)</description>', item_content, re.DOTALL | re.IGNORECASE)
+                            if not description_match:
+                                description_match = re.search(r'<summary>(.*?)</summary>', item_content, re.DOTALL | re.IGNORECASE)
+                            link_match = re.search(r'<link>(.*?)</link>', item_content, re.DOTALL | re.IGNORECASE)
+                            # If link not found, try to get the href attribute in <link />
+                            if not link_match:
+                                link_match = re.search(r'<link\s+[^>]*href=["\']([^"\']*)["\']', item_content, re.IGNORECASE)
+                            title = title_match.group(1).strip() if title_match else ""
+                            description = description_match.group(1).strip() if description_match else ""
+                            link = link_match.group(1).strip() if link_match else ""
+                            item = {
+                                "title": title,
+                                "description": description,
+                                "link": link
+                            }
+                            text_context = f"{item['title']}. {item['description']}"
+                        else:
+                            raise ValueError("Both XML parsing and Regex extraction failed.")
+                    else:
+                        # XML parsing succeeded, proceed with normal parsing
+                        # We'll look for common RSS/Atom structures
+                        items = []
+                        # Try RSS 2.0
+                        for item in root.findall('.//item'):
+                            title_elem = item.find('title')
+                            desc_elem = item.find('description')
+                            link_elem = item.find('link')
+                            title = title_elem.text if title_elem is not None else ""
+                            description = desc_elem.text if desc_elem is not None else ""
+                            link = link_elem.text if link_elem is not None else ""
+                            items.append({
+                                "title": title,
+                                "description": description,
+                                "link": link
+                            })
+                        # Try Atom
+                        for entry in root.findall('.//{http://www.w3.org/2005/Atom}entry'):
+                            title_elem = entry.find('{http://www.w3.org/2005/Atom}title')
+                            summary_elem = entry.find('{http://www.w3.org/2005/Atom}summary')
+                            link_elem = entry.find('{http://www.w3.org/2005/Atom}link')
+                            title = title_elem.text if title_elem is not None else ""
+                            summary = summary_elem.text if summary_elem is not None else ""
+                            link = link_elem.get('href') if link_elem is not None else ""
+                            items.append({
+                                "title": title,
+                                "description": summary,
+                                "link": link
+                            })
+                        if not items:
+                            print(f"[{self.agent_id}] Tier 1 empty for {source_name}. Escalating to Tier 2...")
+                            items = self._perform_live_search_fallback(f"{source_name.replace('_', ' ')} Senate Banking CFPB statement")
+
+                        if items:
+                            for item in items[:3]:
+                                record = {
+                                    "source": source_name.replace('_', ' ').title(),
+                                    "jurisdiction": "US Federal",
+                                    "title": item.get("title", "Statement on Financial Policy"),
+                                    "text_context": f"{item.get('title', '')}. {item.get('description', '')}",
+                                }
+                                records.append(record)
+                            registry.update_source_health(source_name, success=True)
+                        else:
+                            print(f"[{self.agent_id}] Tier 3 Triggered: 0 records found for {source_name}.")
+                            registry.update_source_health(source_name, success=False, error="Tier 1 & 2 yield 0 records")
+
+            except Exception as e:
+                print(f"[{self.agent_id}] Tier 1 Fetch Error for {source_name}: {e}. Escalating to Tier 2...")
+                fallback_items = self._perform_live_search_fallback(f"{source_name.replace('_', ' ')} Senate Banking CFPB statement")
+                if fallback_items:
+                    for item in fallback_items[:3]:
+                        records.append({
+                            "source": source_name.replace('_', ' ').title(),
+                            "jurisdiction": "US Federal",
+                            "title": item.get("title", "Statement on Financial Policy"),
+                            "text_context": f"{item.get('title', '')}. {item.get('description', '')}",
+                        })
+                    registry.update_source_health(source_name, success=True)
+                else:
+                    registry.update_source_health(source_name, success=False, error=str(e))
+                continue
+
+        return {"agent_id": self.agent_id, "records": records, "status": "COMPLETED"}

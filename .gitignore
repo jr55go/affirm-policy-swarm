@@ -1,0 +1,13 @@
+# API Keys and Environment Variables
+.env
+.env.local
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Swarm Data & Memory
+reports/
+notebook.json
+infrastructure/connectors/checkpoints.json

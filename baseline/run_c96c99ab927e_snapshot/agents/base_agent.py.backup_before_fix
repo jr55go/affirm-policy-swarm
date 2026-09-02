@@ -1,0 +1,226 @@
+"""
+Base agent class for all Affirm Policy Swarm agents.
+Provides common functionality for configuration, logging, communication, and lifecycle management.
+"""
+
+import abc
+import logging
+import json
+import time
+import uuid
+import os
+import sys
+from typing import Dict, Any, Optional, List
+from datetime import datetime, timezone
+
+# Add the project root to the Python path to allow absolute imports
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from infrastructure.config import load_config
+from infrastructure.database import get_neo4j_driver, get_redis_client, neo4j_session
+from tools.browser_tool import fetch_and_extract_text_sync
+
+
+class BaseAgent(abc.ABC):
+    SWARM_ID = "affirm_policy_swarm"
+    PROJECT_SCOPE = "affirm_bnpl_policy"
+    """Base class for all policy swarm agents."""
+
+    def __init__(self, agent_id: str = None, role: str = "BaseAgent"):
+        self.agent_id = agent_id or f"{role.lower()}-{str(uuid.uuid4())[:8]}"
+        self.role = role
+        self.config = load_config()
+        self.logger = self._setup_logger()
+        self.neo4j_driver = get_neo4j_driver()
+        self.redis_client = get_redis_client()
+        self.last_heartbeat = time.time()
+        self.start_time = time.time()
+        self.SWARM_ID = self.__class__.SWARM_ID
+        self.PROJECT_SCOPE = self.__class__.PROJECT_SCOPE
+
+        self.logger.info(f"Agent {self.agent_id} ({self.role}) initialized")
+
+    def _setup_logger(self) -> logging.Logger:
+        """Setup agent-specific logger."""
+        logger = logging.getLogger(f"agent.{self.agent_id}")
+        logger.setLevel(getattr(logging, self.config.logging_level.upper()))
+
+        # Avoid adding multiple handlers if logger already exists
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter(
+                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            )
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+
+        return logger
+
+    def heartbeat(self):
+        """Update agent heartbeat timestamp."""
+        self.last_heartbeat = time.time()
+        self.logger.debug(f"Heartbeat updated for {self.agent_id}")
+
+    def is_healthy(self) -> bool:
+        """Check if agent is healthy based on heartbeat."""
+        return (time.time() - self.last_heartbeat) < (self.config.agent_heartbeat_interval * 3)
+
+    def get_uptime(self) -> float:
+        """Get agent uptime in seconds."""
+        return time.time() - self.start_time
+
+    def browse_url(self, url: str) -> str:
+        """Fetch and extract text from a URL using the browser tool."""
+        try:
+            return fetch_and_extract_text_sync(url)
+        except Exception as e:
+            self.log_error(f"Failed to browse URL {url}: {str(e)}")
+            return f"Error: {str(e)}"
+
+    def log_thought(self, thought: str):
+        """Log internal reasoning process (for audit trails)."""
+        self.logger.info(f"THOUGHT: {thought}")
+        # In a production system, this might go to a secure audit log or special database
+
+    def log_error(self, error: str, exc_info=None):
+        """Log error with optional exception info."""
+        self.logger.error(f"ERROR: {error}", exc_info=exc_info)
+
+    def log_info(self, info: str):
+        """Log informational message."""
+        self.logger.info(f"INFO: {info}")
+
+    def query_graph_state(self, lookup_key: str) -> Optional[Dict[str, Any]]:
+        """Query Neo4j for existing state by lookup key."""
+        if not self.neo4j_driver:
+            self.logger.warning("Neo4j driver not available")
+            return None
+
+        try:
+            with neo4j_session() as session:
+                query = """
+                MATCH (n:PolicyState {lookup_key: $lookup_key, swarm_id: $swarm_id, project_scope: $project_scope})
+                RETURN n.node_id as node_id, n.data as data,
+                       n.updated_at as updated_at, n.version as version
+                """
+                result = session.run(query, lookup_key=lookup_key, swarm_id=self.SWARM_ID, project_scope=self.PROJECT_SCOPE)
+                                   swarm_id=self.SWARM_ID,
+                                   project_scope=self.PROJECT_SCOPE,
+                record = result.single()
+
+                if record:
+                    return {
+                        "node_id": record["node_id"],
+                        "data": json.loads(record["data"]) if record["data"] else {},
+                        "updated_at": record["updated_at"],
+                        "version": record["version"]
+                    }
+                return None
+        except Exception as e:
+            self.logger.error(f"Error querying graph state for {lookup_key}: {e}")
+            return None
+
+    def update_graph_state(self, lookup_key: str, data: Dict[str, Any]) -> bool:
+        """Update or create a policy state node in the graph."""
+        if not self.neo4j_driver:
+            self.logger.warning("Neo4j driver not available")
+            return False
+
+        try:
+            with neo4j_session() as session:
+                # Get current version for optimistic locking
+                current = self.query_graph_state(lookup_key)
+                new_version = (current["version"] if current else 0) + 1
+
+                query = """
+                MERGE (n:PolicyState {lookup_key: $lookup_key, swarm_id: $swarm_id, project_scope: $project_scope})
+                SET n.data = $data,
+                    n.updated_at = $updated_at,
+                    n.version = $version
+                RETURN n.node_id as node_id, n.version as version
+                """
+                result = session.run(query,
+                                   lookup_key=lookup_key,
+                                   data=json.dumps(data),
+                                   updated_at=datetime.now(timezone.utc).isoformat(),
+                                   version=new_version)
+                record = result.single()
+
+                if record:
+                    self.logger.debug(f"Updated graph state for {lookup_key}: v{record['version']}")
+                    return True
+                return False
+        except Exception as e:
+            self.logger.error(f"Error updating graph state for {lookup_key}: {e}")
+            return False
+
+    def check_redis_deduplication(self, lookup_key: str) -> Optional[Dict[str, Any]]:
+        """Check Redis for recent execution to prevent duplicate work."""
+        if not self.redis_client:
+            self.logger.warning("Redis client not available")
+            return None
+
+        try:
+            data = self.redis_client.get(lookup_key)
+            if data:
+                return json.loads(data)
+            return None
+        except Exception as e:
+            self.logger.error(f"Error checking Redis deduplication for {lookup_key}: {e}")
+            return None
+
+    def store_redis_deduplication(self, lookup_key: str, data: Dict[str, Any],
+                                expire_seconds: int = 3600) -> bool:
+        """Store execution data in Redis for deduplication."""
+        if not self.redis_client:
+            self.logger.warning("Redis client not available")
+            return False
+
+        try:
+            # Add timestamp if not present
+            if 'execution_timestamp' not in data:
+                data['execution_timestamp'] = datetime.now(timezone.utc).isoformat()
+
+            self.redis_client.setex(
+                lookup_key,
+                expire_seconds,
+                json.dumps(data)
+            )
+            self.logger.debug(f"Stored deduplication data for {lookup_key}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Error storing Redis deduplication for {lookup_key}: {e}")
+            return False
+
+    def get_agent_status(self) -> Dict[str, Any]:
+        """Get current agent status for monitoring/health checks."""
+        return {
+            "agent_id": self.agent_id,
+            "role": self.role,
+            "healthy": self.is_healthy(),
+            "uptime_seconds": self.get_uptime(),
+            "last_heartbeat": self.last_heartbeat,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+    @abc.abstractmethod
+    def execute_task(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute the agent's specific task. Must be implemented by subclasses."""
+        pass
+
+    @abc.abstractmethod
+    def get_capabilities(self) -> List[str]:
+        """Return list of capabilities this agent provides."""
+        pass
+
+
+# Example usage and testing
+if __name__ == "__main__":
+    # This would normally be overridden by specific agent implementations
+    agent = BaseAgent("test-agent", "TestAgent")
+    print(f"Agent {agent.agent_id} initialized with role {agent.role}")
+    print(f"Healthy: {agent.is_healthy()}")
+    print(f"Capabilities: {agent.get_capabilities() if hasattr(agent, 'get_capabilities') else 'Not implemented'}")

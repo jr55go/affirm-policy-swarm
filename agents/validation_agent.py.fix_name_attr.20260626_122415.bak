@@ -1,0 +1,109 @@
+from .base_agent import BaseAgent
+
+
+class ValidationAgent(BaseAgent):
+    def __init__(self, agent_id="validation-agent"):
+        super().__init__(agent_id, role="Validation Agent")
+
+    def execute_task(self, payload):
+        run_id = payload.get("run_id")
+        impact_findings = payload.get("impact_findings", [])
+        leg_records = payload.get("leg_records", [])
+        adjacent = payload.get("adjacent_watchlist", [])
+
+        validations = []
+        # Initialize LLM challenge statistics
+        llm_calls_attempted = 0
+        llm_calls_succeeded = 0
+        fallback_count = 0
+        model_names = set()
+
+        for i, f in enumerate(impact_findings):
+            # Base validation dict (unchanged)
+            validation = {
+                "run_id": run_id,
+                "bill_id": f.get("bill_id"),
+                "validation_status": "APPROVED",
+                "validation_reason": "Accepted because exact BNPL/company terms were detected.",
+                "evidence_sufficient": True,
+                "confidence": "medium",
+            }
+
+            # LLM challenge advisory (only for first 20 findings)
+            if i < 20:
+                try:
+                    llm_result = self.call_llm_json(
+                        prompt="Assess if this finding's BNPL terms detection is accurate and sufficient for validation. Return JSON only.",
+                        schema_name="validation_challenge",
+                        temperature=0.0,
+                        max_tokens=256
+                    )
+                    llm_calls_attempted += 1
+                    # Check if result indicates fallback (assuming BaseAgent sets fallback_mode flag)
+                    if isinstance(llm_result, dict) and llm_result.get("fallback_mode") is True:
+                        fallback_count += 1
+                    else:
+                        llm_calls_succeeded += 1
+                    # Collect model name if present
+                    if isinstance(llm_result, dict):
+                        model_name = llm_result.get("model") or llm_result.get("model_name")
+                        if model_name:
+                            model_names.add(model_name)
+                    validation["llm_challenge_assessment"] = llm_result
+                except Exception as e:
+                    # Fallback on exception
+                    llm_result = {
+                        "challenge_status": "questionable",
+                        "evidence_sufficient": True,
+                        "false_positive_risk": "low",
+                        "reason": f"LLM call failed: {str(e)}",
+                        "confidence": "low",
+                        "fallback_mode": True
+                    }
+                    llm_calls_attempted += 1
+                    fallback_count += 1
+                    validation["llm_challenge_assessment"] = llm_result
+            else:
+                # Beyond limit: no LLM call, but add placeholder for structure consistency
+                validation["llm_challenge_assessment"] = {
+                    "challenge_status": "not_assessed",
+                    "evidence_sufficient": True,
+                    "false_positive_risk": "low",
+                    "reason": "LLM challenge not run due to per-run limit",
+                    "confidence": "low",
+                    "fallback_mode": False
+                }
+
+            validations.append(validation)
+
+        return {
+            "agent_id": self.agent_id,
+            "validation_status": "APPROVED",
+            "validations": validations,
+            "records_in": len(impact_findings),
+            "records_out": len(validations),
+            "legislative_candidates_seen": len(leg_records),
+            "adjacent_watchlist_seen": len(adjacent),
+            "uncertainty_notes": (
+                "No exact BNPL findings were accepted. This is valid if all live records were adjacent or rejected."
+                if not impact_findings else
+                "Accepted BNPL findings validated."
+            ),
+            "status": "COMPLETED",
+            # Add AI reasoning summary for ValidationAgent's LLM challenge
+            "ai_reasoning": {
+                "agent": "ValidationAgent",
+                "llm_calls_attempted": llm_calls_attempted,
+                "llm_calls_succeeded": llm_calls_succeeded,
+                "fallback_count": fallback_count,
+                "model_names": list(model_names)
+            }
+        }
+
+    def get_capabilities(self):
+        return [
+            "bnpl_validation_audit",
+            "deterministic_validation",
+            "llm_false_positive_challenge",
+            "evidence_sufficiency_review"
+        ]

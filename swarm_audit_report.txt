@@ -1,0 +1,726 @@
+========================================
+ OPENCLAW SWARM MASTER AUDIT REPORT
+========================================
+
+[1] MOCK DATA, TODOs, & PLACEHOLDERS
+
+[2] HARDCODED URLS & ENDPOINTS
+
+[3] HARDCODED PORTS (Hunting 7687/7688/18789)
+
+[4] ACTIVE DOCKER CONTAINERS (Database Check)
+CONTAINER ID   IMAGE                                                      COMMAND                  CREATED        STATUS                          PORTS                                                                                                NAMES
+ed6bb1fd1be9   redis/redis-stack:latest                                   "/entrypoint.sh"         5 weeks ago    Exited (255) 18 hours ago       0.0.0.0:6379->6379/tcp, [::]:6379->6379/tcp, 0.0.0.0:8001->8001/tcp, [::]:8001->8001/tcp             redis-stack
+16b1f468ca8e   openclaw-sandbox:bookworm-slim                             "sleep infinity"         5 weeks ago    Exited (255) 18 hours ago                                                                                                            openclaw-sbx-agent-main-f331f052
+24762810758c   neo4j:latest                                               "tini -g -- /startup…"   7 weeks ago    Exited (255) 18 hours ago       7473/tcp, 0.0.0.0:7475->7474/tcp, [::]:7475->7474/tcp, 0.0.0.0:7688->7687/tcp, [::]:7688->7687/tcp   neo4j
+b0d486765fb3   ghcr.io/open-webui/open-webui:cuda                         "bash start.sh"          3 months ago   Up 18 hours (healthy)           0.0.0.0:8080->8080/tcp, [::]:8080->8080/tcp                                                          open-webui-gpu
+f9fce51fc6df   quay.io/docling-project/docling-serve:latest               "container-entrypoin…"   3 months ago   Up 18 hours                     0.0.0.0:5001->5001/tcp, [::]:5001->5001/tcp, 8080/tcp                                                docling-serve
+c200e4ff4a07   apache/tika:latest-full                                    "/bin/sh -c 'exec ja…"   3 months ago   Up 18 hours                     0.0.0.0:9988->9998/tcp, [::]:9988->9998/tcp                                                          tika_dgx
+7ebf596b32df   cma-tool-backend                                           "uvicorn main:app --…"   3 months ago   Up 18 hours                     0.0.0.0:8000->8000/tcp, [::]:8000->8000/tcp                                                          cma-tool-backend-1
+07f3ce08c558   cma-tool-frontend                                          "/docker-entrypoint.…"   3 months ago   Up 18 hours                     0.0.0.0:3000->80/tcp, [::]:3000->80/tcp                                                              cma-tool-frontend-1
+0ca770034cd9   python:3.12-slim                                           "/workspace/venv/bin…"   3 months ago   Created                                                                                                                              trip_price_store-trip_price_store-1
+9765b5c8ad9a   ghcr.io/nvidia/openshell/cluster:0.0.9                     "/usr/local/bin/clus…"   3 months ago   Restarting (1) 20 seconds ago                                                                                                        openshell-cluster-nemoclaw
+ae1dc00fb6a4   ghcr.io/nvidia/openshell/cluster:0.0.9                     "/usr/local/bin/clus…"   3 months ago   Created                                                                                                                              openshell-cluster-openshell
+f2e73c41d677   ghcr.io/nvidia/openshell/cluster:0.0.9                     "/usr/local/bin/clus…"   4 months ago   Exited (0) 4 months ago                                                                                                              openshell-cluster-nemoclaw-gateway
+b5cf5e10f3ba   ollama/ollama:latest                                       "/bin/ollama serve"      4 months ago   Exited (255) 2 months ago                                                                                                            ollama
+937d9509ea8a   local/llama.cpp:server-cuda                                "/app/llama-server -…"   5 months ago   Exited (128) 4 months ago                                                                                                            deepseek-coder
+838c1a486155   local/llama.cpp:server-cuda                                "/app/llama-server -…"   5 months ago   Exited (128) 4 months ago                                                                                                            qwen3-embedding
+58b9923aac28   local/llama.cpp:server-cuda                                "/app/llama-server -…"   5 months ago   Exited (128) 4 months ago                                                                                                            gpt-oss-120b
+e2071dc74905   nginx                                                      "/docker-entrypoint.…"   5 months ago   Up 18 hours                     0.0.0.0:8090->80/tcp, [::]:8090->80/tcp                                                              new-website-container
+be71f8040609   ghcr.io/open-webui/pipelines:main                          "bash start.sh"          5 months ago   Up 18 hours                     0.0.0.0:9099->9099/tcp, [::]:9099->9099/tcp                                                          openwebui-pipelines
+723a36906c9a   unclecode/crawl4ai:latest                                  "supervisord -c supe…"   5 months ago   Exited (0) 5 months ago                                                                                                              crawl4ai
+5e625a930c1a   ghcr.io/open-webui/open-webui:main                         "bash start.sh"          5 months ago   Exited (128) 5 months ago                                                                                                            open-webui
+5de98b205ef9   jpyles0524/scraperr_api:latest                             "supervisord -c /etc…"   5 months ago   Exited (0) 5 months ago                                                                                                              scraperr_api
+e2e838d3a274   jpyles0524/scraperr:latest                                 "docker-entrypoint.s…"   5 months ago   Exited (1) 5 months ago                                                                                                              scraperr
+9b459edcaf35   browser-use:latest                                         "python server_app.py"   5 months ago   Up 18 hours                     0.0.0.0:7788->7788/tcp, [::]:7788->7788/tcp                                                          browser-use
+3fae30edfb59   assets-frontend                                            "docker-entrypoint.s…"   5 months ago   Created                                                                                                                              frontend
+550560f7b3b0   assets-backend                                             "uv run -- uvicorn m…"   5 months ago   Exited (128) 5 months ago                                                                                                            backend
+de8bb5fa4a66   milvusdb/milvus:v2.5.15-20250718-3a3b374f-gpu-arm64        "/tini -- milvus run…"   5 months ago   Exited (1) 5 months ago                                                                                                              milvus-standalone
+a37f05fca60e   nvcr.io/nvidia/tensorrt-llm/release:spark-single-gpu-dev   "/opt/nvidia/nvidia_…"   5 months ago   Exited (128) 5 months ago                                                                                                            qwen2.5-vl
+76373d0a22af   postgres:15-alpine                                         "docker-entrypoint.s…"   5 months ago   Exited (128) 5 months ago                                                                                                            postgres
+435c1950e4a6   minio/minio:RELEASE.2023-03-20T20-16-18Z                   "/usr/bin/docker-ent…"   5 months ago   Exited (128) 5 months ago                                                                                                            milvus-minio
+e91170a84400   quay.io/coreos/etcd:v3.5.5                                 "etcd -advertise-cli…"   5 months ago   Exited (128) 5 months ago                                                                                                            milvus-etcd
+00782c5cdfbd   ghcr.io/open-webui/pipelines:main                          "bash start.sh"          5 months ago   Exited (137) 5 months ago                                                                                                            open-webui-pipelines
+cf561e0c67d2   nvcr.io/nim/meta/llama-3.1-8b-instruct:latest              "/opt/nvidia/nvidia_…"   5 months ago   Exited (0) 5 months ago                                                                                                              nim-fast
+003d85e371db   nvcr.io/nim/qwen/qwen3-32b-dgx-spark:latest                "/opt/nvidia/nvidia_…"   5 months ago   Exited (137) 5 months ago                                                                                                            nim-coder
+7782a1f58d99   jupyter/base-notebook:latest                               "tini -g -- start-no…"   5 months ago   Exited (0) 5 months ago                                                                                                              jupyter-server
+ef324ff84ca7   nvcr.io/nim/meta/llama-3.3-70b-instruct:latest             "/opt/nvidia/nvidia_…"   5 months ago   Exited (1) 5 months ago                                                                                                              nim-supervisor
+112181dd6f5b   ghcr.io/openhands/openhands:latest                         "/app/entrypoint.sh …"   5 months ago   Exited (0) 5 months ago                                                                                                              openhands-app
+0af7f7f9023b   traefik:v2.10.7                                            "/entrypoint.sh trae…"   5 months ago   Exited (0) 5 months ago                                                                                                              workbench-proxy
+909ca2d4b81b   postgres                                                   "docker-entrypoint.s…"   6 months ago   Exited (0) 5 months ago                                                                                                              azconnect-db
+
+[5] EXACT ORCHESTRATOR LOGIC (agents/orchestrator.py)
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
+from agents.discovery_agent import DiscoveryAgent
+from agents.legislative_monitor import LegislativeMonitorAgent
+from agents.entity_resolution_agent import EntityResolutionAgent
+from agents.risk_scoring_agent import RiskScoringAgent
+from agents.impact_analyzer_agent import ImpactAnalyzerAgent
+from agents.context_expansion_agent import ContextExpansionAgent
+from agents.context_compressor_agent import ContextCompressorAgent
+from agents.research_synthesis_agent import ResearchSynthesisAgent
+from agents.validation_agent import ValidationAgent
+from agents.reporting_agent import ReportingAgent
+from agents.human_feedback_agent import HumanFeedbackAgent
+from infrastructure.graph_db import GraphConnector
+import json
+import os
+import time
+import logging
+import argparse
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+class PolicyOrchestratorAgent:
+    def run_swarm(self, cg_key, ls_key, golden_run=False):
+        run_id = f"run_{int(time.time())}"
+        report_dir = f"reports/live_runs/{run_id}"
+        os.makedirs(report_dir, exist_ok=True)
+        
+        logger.info(f"[{self.__class__.__name__}] Starting swarm run: {run_id}")
+        
+        # 1. Data Collection Phase - Running in Parallel Streams
+        # Stream A: Web Discovery (DiscoveryAgent)
+        # Stream B: Legislative & Regulatory API Monitors
+        
+        # Stream A: Web Discovery
+        logger.info(f"[{self.__class__.__name__}] Starting Stream A: Web Discovery")
+        discovery_out = DiscoveryAgent().execute_task({"run_id": run_id})
+        web_records = discovery_out.get("records", [])
+        logger.info(f"[{self.__class__.__name__}] Stream A Complete: Discovered {len(web_records)} web records")
+        
+        # Stream B: Legislative & Regulatory API Monitors
+        logger.info(f"[{self.__class__.__name__}] Starting Stream B: Legislative & Regulatory API Monitors")
+        
+        # Import and initialize API monitors
+        from agents.legislative_monitor import LegislativeMonitorAgent
+        from infrastructure.connectors.federal_register_connector import FederalRegisterConnector
+        from infrastructure.connectors.regulations_gov_connector import RegulationsGovConnector
+        from infrastructure.connectors.cfpb_connector import CFPBConnector
+        
+        # Collect API monitor data
+        api_records = []
+        
+        # Legislative Monitor (Congress.gov + LegiScan)
+        try:
+            legislative_monitor = LegislativeMonitorAgent()
+            leg_out = legislative_monitor.execute_task({"run_id": run_id, "cg_key": cg_key, "ls_key": ls_key})
+            leg_records = leg_out.get("records", [])
+            api_records.extend(leg_records)
+            logger.info(f"[{self.__class__.__name__}] Legislative Monitor: Collected {len(leg_records)} records")
+        except Exception as e:
+            logger.error(f"[{self.__class__.__name__}] Legislative Monitor failed: {e}")
+        
+        # Federal Register Monitor
+        try:
+            fr_config = {
+                'api_base_url': 'https://www.federalregister.gov/api/v1/articles.json',
+                'timeout': 30,
+                'rate_limit_delay': 1.0
+            }
+            fr_connector = FederalRegisterConnector(fr_config)
+            if fr_connector.connect() and fr_connector.authenticate():
+                fr_data = fr_connector.incremental_sync()
+                # Convert raw data to records format
+                for item in fr_data if isinstance(fr_data, list) else []:
+                    api_records.append({
+                        "title": item.get('title', 'Federal Register Article'),
+                        "summary": item.get('abstract', '')[:500] + "..." if len(item.get('abstract', '')) > 500 else item.get('abstract', ''),
+                        "source": "Federal Register",
+                        "url": item.get('html_url', ''),
+                        "date": item.get('publication_date', '')
+                    })
+                fr_connector.shutdown()
+                logger.info(f"[{self.__class__.__name__}] Federal Register Monitor: Collected {len(fr_data) if isinstance(fr_data, list) else 0} records")
+        except Exception as e:
+            logger.error(f"[{self.__class__.__name__}] Federal Register Monitor failed: {e}")
+        
+        # Regulations.gov Monitor
+        try:
+            regs_config = {
+                'api_key': os.getenv('REGULATIONS_GOV_API_KEY', 'DEMO_KEY'),
+                'timeout': 30,
+                'rate_limit_delay': 1.0
+            }
+            regs_connector = RegulationsGovConnector(regs_config)
+            if regs_connector.connect() and regs_connector.authenticate():
+                regs_data = regs_connector.incremental_sync()
+                # Convert raw data to records format
+                for item in regs_data if isinstance(regs_data, list) else []:
+                    attributes = item.get('attributes', {}) if isinstance(item, dict) else {}
+                    api_records.append({
+                        "title": attributes.get('title', 'Regulations.gov Document'),
+                        "summary": f"Type: {attributes.get('documentType', 'Document')}",
+                        "source": "Regulations.gov",
+                        "url": attributes.get('fileFormats', [{}])[0].get('fileUrl', f"https://www.regulations.gov/document/{attributes.get('objectId', '')}") if attributes.get('fileFormats') and len(attributes.get('fileFormats', [])) > 0 else f"https://www.regulations.gov/document/{attributes.get('objectId', '')}",
+                        "date": attributes.get('postedDate', '')
+                    })
+                regs_connector.shutdown()
+                logger.info(f"[{self.__class__.__name__}] Regulations.gov Monitor: Collected {len(regs_data) if isinstance(regs_data, list) else 0} records")
+        except Exception as e:
+            logger.error(f"[{self.__class__.__name__}] Regulations.gov Monitor failed: {e}")
+        
+        # CFPB Monitor
+        try:
+            cfpb_config = {
+                'api_base_url': 'https://data.consumerfinance.gov/resource/jhzv-w97w.json',
+                'timeout': 30,
+                'rate_limit_delay': 1.0
+            }
+            cfpb_connector = CFPBConnector(cfpb_config)
+            if cfpb_connector.connect():
+                cfpb_data = cfpb_connector.incremental_sync()
+                cfpb_records = cfpb_data.get('new_data', []) if isinstance(cfpb_data, dict) else []
+                # Convert raw data to records format
+                for item in cfpb_records:
+                    api_records.append({
+                        "title": f"{item.get('product', '')} - {item.get('issue', '')}".strip(' -'),
+                        "summary": (item.get('consumer_complaint_narrative', '')[:500] + "...") if len(item.get('consumer_complaint_narrative', '')) > 500 else item.get('consumer_complaint_narrative', ''),
+                        "source": "CFPB",
+                        "url": f"https://www.consumerfinance.gov/data-research/consumer-complaints/search/?complaint_id={item.get('complaint_id', '')}" if item.get('complaint_id') else "https://www.consumerfinance.gov/data-research/consumer-complaints/",
+                        "date": item.get('date_received', '')
+                    })
+                cfpb_connector.shutdown()
+                logger.info(f"[{self.__class__.__name__}] CFPB Monitor: Collected {len(cfbp_records)} records")
+        except Exception as e:
+            logger.error(f"[{self.__class__.__name__}] CFPB Monitor failed: {e}")
+        
+        logger.info(f"[{self.__class__.__name__}] Stream B Complete: Collected {len(api_records)} API monitor records")
+        
+        # Merge all outputs into a single list of records
+        all_records = web_records + api_records
+        logger.info(f"[{self.__class__.__name__}] Total combined records: {len(all_records)} ({len(web_records)} web + {len(api_records)} API)")
+        
+        # Apply golden run limits: exactly 1 live item from discovery
+        if golden_run:
+            # Take only the first record for golden run
+            all_records = all_records[:1]
+            logger.info(f"[{self.__class__.__name__}] Golden run mode: limited to {len(all_records)} record")
+        
+        # 1.5. Context Expansion (Inserted after data collection, before analysis)
+        context_out = ContextExpansionAgent().execute_task({"records": all_records, "run_id": run_id})
+        expanded_records = context_out.get("records", [])
+        logger.info(f"[{self.__class__.__name__}] Expanded context for {len(expanded_records)} records")
+        
+        # 2. Analyze
+        impact_out = ImpactAnalyzerAgent().execute_task({"records": expanded_records, "run_id": run_id})
+        findings = impact_out.get("records", [])
+        logger.info(f"[{self.__class__.__name__}] Analyzed {len(findings)} records")
+        
+        # 2.5. Simulated Human Feedback Loop (for golden dataset generation)
+        # Select one record rejected by ImpactAnalyzer (low impact score) for simulated human review
+        low_impact_records = [r for r in findings if r.get("impact_score") == "low"]
+        if low_impact_records:
+            # Select the first low-impact record for simulation
+            record_for_feedback = low_impact_records[0]
+            # Simulate human override: mark as high impact with corrected reasoning
+            human_decision = "monitor"
+            corrected_reasoning = "Upon manual review, this record contains significant BNPL relevance despite initial low-score assessment. Contains relevant credit finance implications."
+            
+            # Instantiate and use HumanFeedbackAgent
+            feedback_agent = HumanFeedbackAgent()
+            feedback_result = feedback_agent.execute_task({
+                "record": record_for_feedback,
+                "human_decision": human_decision,
+                "corrected_reasoning": corrected_reasoning
+            })
+            logger.info(f"[{self.__class__.__name__}] Human feedback logged: {feedback_result}")
+        else:
+            logger.info(f"[{self.__class__.__name__}] No low-impact records found for simulated human feedback")
+        
+        # 3. Context Compression (Map)
+        compression_out = ContextCompressorAgent().execute_task({"findings": findings, "run_id": run_id})
+        compressed_findings = compression_out.get("findings", [])
+        logger.info(f"[{self.__class__.__name__}] Compressed {len(compressed_findings)} findings")
+        
+        # 4. Entity Resolution (Extract entities from compressed findings)
+        entity_out = EntityResolutionAgent().execute_task({"findings": compressed_findings, "run_id": run_id})
+        entity_enriched_findings = entity_out.get("findings", [])
+        logger.info(f"[{self.__class__.__name__}] Extracted entities for {len(entity_enriched_findings)} findings")
+        
+        # 5. Risk Scoring (Score the entity-enriched findings)
+        risk_out = RiskScoringAgent().execute_task({"findings": entity_enriched_findings, "run_id": run_id})
+        risk_scored_findings = risk_out.get("findings", [])
+        logger.info(f"[{self.__class__.__name__}] Scored risk for {len(risk_scored_findings)} findings")
+        
+        # 6. Validate
+        val_out = ValidationAgent().execute_task({"findings": risk_scored_findings, "run_id": run_id})
+        validated_findings = val_out.get("findings", [])
+        logger.info(f"[{self.__class__.__name__}] Validated {len(validated_findings)} findings")
+        
+        # 6.5. Human Review Queue for gray area (70-79 risk score)
+        gray_area_findings = [f for f in validated_findings if 70 <= f.get('risk_score', 0) <= 79]
+        if gray_area_findings:
+            review_queue_path = os.path.join(report_dir, "review_queue.json")
+            with open(review_queue_path, 'w') as f:
+                json.dump(gray_area_findings, f, indent=2)
+            logger.info(f"[{self.__class__.__name__}] Created review queue with {len(gray_area_findings)} items at {review_queue_path}")
+
+        # 7. Sync to Graph Database
+        try:
+            graph_connector = GraphConnector()
+            graph_connector.sync_findings(validated_findings, run_id)
+            graph_connector.close()
+            logger.info(f"[{self.__class__.__name__}] Synced {len(validated_findings)} findings to Neo4j")
+        except Exception as e:
+            logger.error(f"[{self.__class__.__name__}] Failed to sync to Neo4j: {e}")
+            # Continue with the swarm even if graph sync fails
+        
+        # 8. Synthesize (using compressed findings)
+        synth_out = ResearchSynthesisAgent().execute_task({"findings": compressed_findings, "run_id": run_id})
+        logger.info(f"[{self.__class__.__name__}] Synthesis complete")
+        
+        # 9. Report (The final step) - using validated findings with entities and scores
+        ReportingAgent().execute_task({
+            "report_dir": report_dir,
+            "findings": validated_findings,
+            "synthesis": synth_out
+        })
+        logger.info(f"[{self.__class__.__name__}] Report generated in {report_dir}")
+        
+        return {"report_dir": report_dir}
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Run the policy swarm orchestrator.')
+    parser.add_argument('--golden-run', action='store_true', help='Run in golden mode (limit to 1 item per Tier 1 connector)')
+    args = parser.parse_args()
+    
+    # Get API keys from environment
+    cg_key = os.getenv("CONGRESS_GOV_API_KEY")
+    ls_key = os.getenv("LEXISNEXIS_API_KEY")  # Note: adjust if LegiScan uses different env var name
+    
+    orchestrator = PolicyOrchestratorAgent()
+    orchestrator.run_swarm(cg_key, ls_key, golden_run=args.golden_run)
+[6] EXACT SOURCE REGISTRY (infrastructure/source_registry.py)
+"""Source Registry for Affirm Policy Swarm.
+Authoritative catalog for all swarm data sources.
+"""
+import datetime
+import os
+
+# Import the new CFPBConnector for Tier 1 migration
+try:
+    from infrastructure.connectors.regulators.cfpb_connector import CFPBConnector
+    CFPB_CONNECTOR_AVAILABLE = True
+except ImportError:
+    CFPB_CONNECTOR_AVAILABLE = False
+    CFPBConnector = None
+
+# Import the new LegiScanConnector for Tier 1 migration
+try:
+    from infrastructure.connectors.legislation.legiscan_connector import LegiScanConnector
+    LEGISCAN_CONNECTOR_AVAILABLE = True
+except ImportError:
+    LEGISCAN_CONNECTOR_AVAILABLE = False
+    LegiScanConnector = None
+
+# Import the new ResearchConnector for Phase 4 implementation
+try:
+    from infrastructure.connectors.research.research_connector import ResearchConnector
+    RESEARCH_CONNECTOR_AVAILABLE = True
+except ImportError:
+    RESEARCH_CONNECTOR_AVAILABLE = False
+    ResearchConnector = None
+
+# Import the new PolicymakerConnector for Phase 5 implementation
+try:
+    from infrastructure.connectors.policy.policymaker_connector import PolicymakerConnector
+    POLICYMAKER_CONNECTOR_AVAILABLE = True
+except ImportError:
+    POLICYMAKER_CONNECTOR_AVAILABLE = False
+    PolicymakerConnector = None
+
+# Import the new NewsConnector for Phase 6 implementation
+try:
+    from infrastructure.connectors.news.news_connector import NewsConnector
+    NEWS_CONNECTOR_AVAILABLE = True
+except ImportError:
+    NEWS_CONNECTOR_AVAILABLE = False
+    NewsConnector = None
+
+# Import the new PublicStatementConnector for Phase 7 implementation
+try:
+    from infrastructure.connectors.social.public_statement_connector import PublicStatementConnector
+    PUBLIC_STATEMENT_CONNECTOR_AVAILABLE = True
+except ImportError:
+    PUBLIC_STATEMENT_CONNECTOR_AVAILABLE = False
+    PublicStatementConnector = None
+
+class SourceRegistry:
+    def __init__(self):
+        self._catalog = {
+            "congress_gov": {
+                "source_type": "legislation", "access_method": "api",
+                "url": "https://api.congress.gov/v3/", "cadence": "daily",
+                "enabled": True, "rate_limit": "250/day", "last_success": None, "last_error": None
+            },
+            "legiscan": {
+                "source_type": "legislation", "access_method": "api",
+                "url": "https://api.legiscan.com/", "cadence": "daily",
+                "enabled": True, "rate_limit": "unlimited", "last_success": None, "last_error": None
+            },
+            "federal_register": {
+                "source_type": "regulator", "access_method": "api",
+                "url": "https://www.federalregister.gov/api/v1/", "cadence": "daily",
+                "enabled": True, "rate_limit": "polite", "last_success": None, "last_error": None
+            },
+            "brookings_policy_research": {
+                "source_type": "research", "access_method": "scraper",
+                "url": "https://www.brookings.edu/research/", "cadence": "weekly",
+                "enabled": True, "rate_limit": "polite", "last_success": None, "last_error": None
+            },
+            "cfpb_enforcement": {
+                "source_type": "regulator", "access_method": "api",
+                "url": "https://www.consumerfinance.gov/data-research/consumer-complaints/", "cadence": "daily",
+                "enabled": True, "rate_limit": "polite", "last_success": None, "last_error": None
+            },
+            "senate_banking_committee": {
+                "source_type": "policymaker", "access_method": "rss",
+                # Base URL for the source (used when online)
+                "url": "https://www.banking.senate.gov/",
+                "cadence": "daily",
+                "enabled": True, "rate_limit": "polite", "last_success": None, "last_error": None,
+                # Add fallback configuration for robustness
+                "fallback_enabled": True,
+                "fallback_data": [
+                    {
+                        "title": "Sample Senate Banking Committee Statement (Offline Fallback)",
+                        "text_context": "This is fallback data generated when the Senate Banking Committee RSS feed is unavailable. Represents typical committee activity regarding financial regulation oversight.",
+                        "source": "Senate Banking Committee [OFFLINE FALLBACK]",
+                        "url": "https://www.banking.senate.gov/ (Cached)",
+                        "date": datetime.datetime.now().strftime("%Y-%m-%d"),
+                        "impact_score": "medium"
+                    }
+                ],
+                "error_tolerance": "log_and_continue"
+            },
+            "fintech_press": {
+                "source_type": "news", "access_method": "rss",
+                # Updated to a working fintech RSS feed
+                "url": "https://www.coindesk.com/arc/outboundfeeds/rss/", 
+                "cadence": "daily",
+                "enabled": True, "rate_limit": "polite", "last_success": None, "last_error": None
+            },
+            "cfpb_director_statements": {
+                "source_type": "social_public", "access_method": "api",
+                "url": "https://api.example.com/cfpb/director/statements", "cadence": "hourly",
+                "enabled": True, "rate_limit": "polite", "last_success": None, "last_error": None
+            },
+            "policymaker_statements": {
+                "source_type": "policymaker", "access_method": "rss",
+                # Placeholder URL - actual feeds configured in connector
+                "url": "https://www.federalreserve.gov/feeds/press_all.xml",
+                "cadence": "daily",
+                "enabled": True, "rate_limit": "polite", "last_success": None, "last_error": None
+            },
+            "financial_news": {
+                "source_type": "news", "access_method": "rss",
+                # Placeholder URL - actual feeds configured in connector
+                "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=120000000&id=10000664",
+                "cadence": "daily",
+                "enabled": True, "rate_limit": "polite", "last_success": None, "last_error": None
+            },
+            "public_social_statements": {
+                "source_type": "social_public", "access_method": "rss",
+                # Placeholder URL - actual feeds configured in connector
+                "url": "Multiple public statement sources (see connector config)",
+                "cadence": "daily",
+                "enabled": True, "rate_limit": "polite", "last_success": None, "last_error": None
+            }
+        }
+        
+        # Initialize CFPB connector if available (Tier 1 migration)
+        if CFPB_CONNECTOR_AVAILABLE:
+            cfpb_config = {
+                'api_base_url': 'https://data.consumerfinance.gov/resource/jhzv-w97w.json',
+                'timeout': 30,
+                'rate_limit_delay': 1.0
+            }
+            self._cfpb_connector = CFPBConnector(cfpb_config)
+        else:
+            self._cfpb_connector = None
+
+        # Initialize LegiScan connector if available (Tier 1 migration)
+        if LEGISCAN_CONNECTOR_AVAILABLE:
+            legiscan_config = {
+                'api_base_url': 'https://api.legiscan.com/',
+                'timeout': 30,
+                'rate_limit_delay': 1.0,
+                'api_key': None  # Will be set from environment or config later
+            }
+            self._legiscan_connector = LegiScanConnector(legiscan_config)
+        else:
+            self._legiscan_connector = None
+
+        # Initialize Research connector if available (Phase 4 implementation)
+        if RESEARCH_CONNECTOR_AVAILABLE:
+            research_config = {
+                'timeout': 30,
+                'rate_limit_delay': 2.0,
+                'feeds': {
+                    'Brookings Institution': 'https://www.brookings.edu/feed/',
+                    'National Consumer Law Center': 'https://www.nclc.org/feed',
+                    'Consumer Federation of America': 'https://consumerfed.org/feed/',
+                    'New America': 'https://www.newamerica.org/feed/',
+                    'Urban Institute': 'https://www.urban.org/feeds/research.xml'
+                }
+            }
+            self._research_connector = ResearchConnector(research_config)
+        else:
+            self._research_connector = None
+
+        # Initialize Policymaker connector if available (Phase 5 implementation)
+        if POLICYMAKER_CONNECTOR_AVAILABLE:
+            policymaker_config = {
+                'feeds': [
+                    # Senate Banking Committee
+                    {
+                        'name': 'Senate Banking Committee',
+                        'url': 'https://www.banking.senate.gov/imo/media/doc/RSSFeed.xml',
+                        'source_name_override': 'Senate Banking Committee'
+                    },
+                    # House Financial Services Committee
+                    {
+                        'name': 'House Financial Services Committee',
+                        'url': 'https://financialservices.house.gov/news/rss.aspx',
+                        'source_name_override': 'House Financial Services Committee'
+                    },
+                    # Senate Finance Committee
+                    {
+                        'name': 'Senate Finance Committee',
+                        'url': 'https://www.finance.senate.gov/feed/',
+                        'source_name_override': 'Senate Finance Committee'
+                    },
+                    # House Ways and Means Committee
+                    {
+                        'name': 'House Ways and Means Committee',
+                        'url': 'https://waysandmeans.house.gov/news/rss.aspx',
+                        'source_name_override': 'House Ways and Means Committee'
+                    },
+                    # Senator Elizabeth Warren
+                    {
+                        'name': 'Senator Elizabeth Warren',
+                        'url': 'https://www.warren.senate.gov/rss/',
+                        'source_name_override': 'Office of Sen. Elizabeth Warren'
+                    },
+                    # Senator Sherrod Brown
+                    {
+                        'name': 'Senator Sherrod Brown',
+                        'url': 'https://www.brown.senate.gov/rss/',
+                        'source_name_override': 'Office of Sen. Sherrod Brown'
+                    },
+                    # Senator Mike Crapo
+                    {
+                        'name': 'Senator Mike Crapo',
+                        'url': 'https://www.crapo.senate.gov/rss/',
+                        'source_name_override': 'Office of Sen. Mike Crapo'
+                    },
+                    # Senator Pat Toomey
+                    {
+                        'name': 'Senator Pat Toomey',
+                        'url': 'https://www.toomey.senate.gov/rss/',
+                        'source_name_override': 'Office of Sen. Pat Toomey'
+                    },
+                    # Federal Reserve Chair (press releases)
+                    {
+                        'name': 'Federal Reserve Press Releases',
+                        'url': 'https://www.federalreserve.gov/feeds/press_all.xml',
+                        'source_name_override': 'Federal Reserve Board'
+                    },
+                    # CFPB Director
+                    {
+                        'name': 'CFPB Director Newsroom',
+                        'url': 'https://www.consumerfinance.gov/about-us/newsroom/rss/',
+                        'source_name_override': 'Consumer Financial Protection Bureau'
+                    }
+                ],
+                'timeout': 30,
+                'rate_limit_delay': 1.0
+            }
+            self._policymaker_connector = PolicymakerConnector(policymaker_config)
+        else:
+            self._policymaker_connector = None
+
+        # Initialize News connector if available (Phase 6 implementation)
+        if NEWS_CONNECTOR_AVAILABLE:
+            news_config = {
+                'feeds': [
+                    # Reuters Financial News
+                    {
+                        'name': 'Reuters Financial News',
+                        'url': 'http://feeds.reuters.com/reuters/businessNews',
+                        'source_name_override': 'Reuters'
+                    },
+                    # American Banker
+                    {
+                        'name': 'American Banker',
+                        'url': 'https://www.americanbanker.com/rss',
+                        'source_name_override': 'American Banker'
+                    },
+                    # Politico Pro Financial Services
+                    {
+                        'name': 'Politico Pro Financial Services',
+                        'url': 'https://www.politico.com/rss/politicoprofinancialservices.xml',
+                        'source_name_override': 'Politico Pro'
+                    },
+                    # Bloomberg Finance
+                    {
+                        'name': 'Bloomberg Finance',
+                        'url': 'https://feeds.bloomberg.com/markets/news.rss',
+                        'source_name_override': 'Bloomberg'
+                    },
+                    # Wall Street Journal - Markets
+                    {
+                        'name': 'Wall Street Journal - Markets',
+                        'url': 'https://feeds.wsj.com/public/rss/marketsnews',
+                        'source_name_override': 'Wall Street Journal'
+                    }
+                ],
+                'timeout': 30,
+                'rate_limit_delay': 1.0
+            }
+            self._news_connector = NewsConnector(news_config)
+        else:
+            self._news_connector = None
+
+        # Initialize Public Statement connector if available (Phase 7 implementation)
+        if PUBLIC_STATEMENT_CONNECTOR_AVAILABLE:
+            public_statement_config = {
+                'feeds': [
+                    # Federal Reserve Chair (Jerome Powell) - Speeches
+                    {
+                        'name': 'Federal Reserve Chair Speeches',
+                        'url': 'https://www.federalreserve.gov/feeds/press_speech.xml',
+                        'source_name_override': 'Federal Reserve Chair'
+                    },
+                    # Treasury Secretary Press Releases
+                    {
+                        'name': 'Treasury Department Press Releases',
+                        'url': 'https://home.treasury.gov/news/press-releases/rss',
+                        'source_name_override': 'U.S. Department of the Treasury'
+                    },
+                    # SEC Chairman Statements
+                    {
+                        'name': 'SEC Chairman Statements',
+                        'url': 'https://www.sec.gov/news/pressreleases.rss',
+                        'source_name_override': 'Securities and Exchange Commission'
+                    },
+                    # FDIC Chairman Statements
+                    {
+                        'name': 'FDIC Chairman Statements',
+                        'url': 'https://www.fdic.gov/news/press-releases/rss.xml',
+                        'source_name_override': 'Federal Deposit Insurance Corporation'
+                    },
+                    # OCC Acting Comptroller Statements
+                    {
+                        'name': 'OCC News Releases',
+                        'url': 'https://www.occ.treas.gov/news-issuances/news-releases/rss.xml',
+                        'source_name_override': 'Office of the Comptroller of the Currency'
+                    },
+                    # CFPB Director (Rohit Chopra) - Speeches/Testimony
+                    {
+                        'name': 'CFPB Director Speeches',
+                        'url': 'https://www.consumerfinance.gov/about-us/newsroom/speeches.rss',
+                        'source_name_override': 'CFPB Director'
+                    },
+                    # Federal Reserve Governor (Michelle Bowman) - Speeches
+                    {
+                        'name': 'Federal Reserve Governor Speeches',
+                        'url': 'https://www.federalreserve.gov/feeds/press_speech.xml',
+                        'source_name_override': 'Federal Reserve Governor'
+                    }
+                ],
+                'timeout': 30,
+                'rate_limit_delay': 1.0
+            }
+            self._public_statement_connector = PublicStatementConnector(public_statement_config)
+        else:
+            self._public_statement_connector = None
+
+    def get_source_metadata(self, source_name: str):
+        return self._catalog.get(source_name)
+
+    def get_cfpb_connector(self):
+        """
+        Get the CFPB connector instance for Tier 1 migration.
+        
+        Returns:
+            CFPBConnector instance if available, None otherwise
+        """
+        return self._cfpb_connector
+
+    def get_legiscan_connector(self):
+        """
+        Get the LegiScan connector instance for Tier 1 migration.
+        
+        Returns:
+            LegiScanConnector instance if available, None otherwise
+        """
+        return self._legiscan_connector
+
+    def get_research_connector(self):
+        """
+        Get the Research connector instance for Phase 4 implementation.
+        
+        Returns:
+            ResearchConnector instance if available, None otherwise
+        """
+        return self._research_connector
+
+    def get_policymaker_connector(self):
+        """
+        Get the Policymaker connector instance for Phase 5 implementation.
+        
+        Returns:
+            PolicymakerConnector instance if available, None otherwise
+        """
+        return self._policymaker_connector
+
+    def get_news_connector(self):
+        """
+        Get the News connector instance for Phase 6 implementation.
+        
+        Returns:
+            NewsConnector instance if available, None otherwise
+        """
+        return self._news_connector
+
+    def get_public_statement_connector(self):
+        """
+        Get the Public Statement connector instance for Phase 7 implementation.
+        
+        Returns:
+            PublicStatementConnector instance if available, None otherwise
+        """
+        return self._public_statement_connector
+
+    def update_source_health(self, source_name: str, success: bool, error: str = None):
+        if source_name in self._catalog:
+            # For senate_banking_committee, treat 503 as temporary unavailability
+            source_config = self._catalog[source_name]
+            if source_name == "senate_banking_committee" and error and "503" in str(error):
+                # Log as temporary issue but don't mark as failed
+                source_config["last_error"] = "Source temporarily unavailable (503)"
+                # Don't update last_success to avoid marking as failed
+            else:
+                self._catalog[source_name]["last_success"] = datetime.datetime.now().isoformat() if success else self._catalog[source_name]["last_success"]
+                self._catalog[source_name]["last_error"] = error
+
+    def list_enabled_sources(self) -> list:
+        return [name for name, meta in self._catalog.items() if meta["enabled"]]
+
+    def get_enabled_sources_by_type(self, source_type: str) -> list:
+        return [name for name, meta in self._catalog.items() if meta["enabled"] and meta["source_type"] == source_type]
+
+    def get_fallback_data(self, source_name: str):
+        """Get fallback data for a source when it's unavailable"""
+        source_config = self._catalog.get(source_name, {})
+        if source_config.get("fallback_enabled") and "fallback_data" in source_config:
+            return source_config["fallback_data"]
+        return []

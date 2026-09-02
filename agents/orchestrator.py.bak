@@ -1,0 +1,271 @@
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
+from agents.discovery_agent import DiscoveryAgent
+from agents.planner_agent import PlannerAgent
+from agents.reader_agent import ReaderAgent
+from agents.legislative_monitor import LegislativeMonitorAgent
+from agents.entity_resolution_agent import EntityResolutionAgent
+from agents.risk_scoring_agent import RiskScoringAgent
+from agents.impact_analyzer_agent import ImpactAnalyzerAgent
+from agents.context_expansion_agent import ContextExpansionAgent
+from agents.context_compressor_agent import ContextCompressorAgent
+from agents.research_synthesis_agent import ResearchSynthesisAgent
+from agents.validation_agent import ValidationAgent
+from agents.reporting_agent import ReportingAgent
+from agents.human_feedback_agent import HumanFeedbackAgent
+from agents.market_sentiment_agent import MarketSentimentAgent
+from agents.public_statement_monitor_agent import PublicStatementMonitorAgent
+from infrastructure.connectors.federal_register_connector import FederalRegisterConnector
+from infrastructure.connectors.regulations_gov_connector import RegulationsGovConnector
+from infrastructure.connectors.cfpb_connector import CFPBConnector
+from infrastructure.graph_db import GraphConnector
+import json
+import time
+import logging
+import argparse
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+def deduplicate_records(records: list) -> list:
+    '''Removes duplicate context strings before dispatching to LLM.'''
+    seen_hashes = set()
+    unique_records = []
+    for r in records:
+        text_stub = (str(r.get("title", "")) + str(r.get("text_context", "")) + str(r.get("snippet", "")))[:150].strip().lower()
+        if not text_stub:
+            continue
+        if text_stub not in seen_hashes:
+            seen_hashes.add(text_stub)
+            unique_records.append(r)
+    return unique_records
+
+class PolicyOrchestratorAgent:
+    def run_swarm(self, cg_key, ls_key, golden_run=False):
+        planner = PlannerAgent()
+        discovery = DiscoveryAgent()
+        reader = ReaderAgent()
+        human_feedback = HumanFeedbackAgent()
+        market_sentiment = MarketSentimentAgent()
+        public_statement = PublicStatementMonitorAgent()
+        
+        run_id = f"run_{int(time.time())}"
+        report_dir = f"reports/live_runs/{run_id}"
+        os.makedirs(report_dir, exist_ok=True)
+        
+        logger.info(f"[{self.__class__.__name__}] Starting swarm run: {run_id}")
+        all_records = []
+        
+        # 1. STREAM A: WEB DISCOVERY (The Research Loop)
+        for iteration in range(3):
+            logger.info(f"--- Starting Autonomous Iteration {iteration} ---")
+            queries = planner.generate_plan("Affirm regulatory risk", context_records=all_records)
+            discovery_out = discovery.execute_task({"queries": queries})
+            all_records.extend(discovery_out.get("records", []))
+            logger.info(f"[{self.__class__.__name__}] Iteration {iteration} Complete: Discovered {len(discovery_out.get('records', []))} web records")
+            
+        logger.info(f"[{self.__class__.__name__}] Dispatching Reader Agent to extract full documents...")
+        reader_out = reader.execute_task({"records": all_records})
+        all_records = reader_out.get("records", [])
+            
+        # 2. STREAM B: LEGISLATIVE & REGULATORY APIs
+        logger.info(f"[{self.__class__.__name__}] Starting Stream B: Legislative & Regulatory API Monitors")
+        api_records = []
+        
+        # 2a. Legislative Monitor
+        try:
+            legislative_monitor = LegislativeMonitorAgent()
+            leg_out = legislative_monitor.execute_task({"run_id": run_id, "cg_key": cg_key, "ls_key": ls_key})
+            api_records.extend(leg_out.get("records", []))
+            logger.info(f"[{self.__class__.__name__}] Legislative Monitor: Collected {len(leg_out.get('records', []))} records")
+        except Exception as e:
+            logger.error(f"Legislative Monitor failed: {e}")
+
+        # 2b. Federal Register Monitor
+        try:
+            fr_connector = FederalRegisterConnector({'api_base_url': 'https://www.federalregister.gov/api/v1/articles.json', 'timeout': 30})
+            if fr_connector.connect() and fr_connector.authenticate():
+                fr_data = fr_connector.incremental_sync()
+                for item in (fr_data if isinstance(fr_data, list) else []):
+                    api_records.append({
+                        "title": item.get('title', 'Federal Register Article'),
+                        "snippet": (item.get('abstract') or '')[:1000],
+                        "source": "Federal Register",
+                        "url": item.get('html_url', ''),
+                        "date": item.get('publication_date', '')
+                    })
+                fr_connector.shutdown()
+                logger.info(f"[{self.__class__.__name__}] Federal Register: Collected {len(fr_data if isinstance(fr_data, list) else [])} records")
+        except Exception as e:
+            logger.error(f"Federal Register Monitor failed: {e}")
+
+        # 2c. Regulations.gov Monitor
+        try:
+            regs_connector = RegulationsGovConnector({'api_key': os.getenv('REGULATIONS_GOV_API_KEY', 'DEMO_KEY'), 'timeout': 30})
+            if regs_connector.connect() and regs_connector.authenticate():
+                regs_data = regs_connector.incremental_sync()
+                for item in (regs_data if isinstance(regs_data, list) else []):
+                    attrs = item.get('attributes', {})
+                    api_records.append({
+                        "title": attrs.get('title', 'Regulations.gov Document'),
+                        "snippet": f"Type: {attrs.get('documentType', 'Document')}",
+                        "source": "Regulations.gov",
+                        "url": f"https://www.regulations.gov/document/{attrs.get('objectId', '')}",
+                        "date": attrs.get('postedDate', '')
+                    })
+                regs_connector.shutdown()
+                logger.info(f"[{self.__class__.__name__}] Regulations.gov: Collected {len(regs_data if isinstance(regs_data, list) else [])} records")
+        except Exception as e:
+            logger.error(f"Regulations.gov Monitor failed: {e}")
+
+        # 2d. CFPB Monitor
+        try:
+            cfpb_connector = CFPBConnector()
+            cfpb_data = cfpb_connector.fetch_data({})
+            if isinstance(cfpb_data, list): api_records.extend(cfpb_data)
+            logger.info(f"[{self.__class__.__name__}] CFPB Monitor: Collected {len(cfpb_data)} records")
+        except Exception as e:
+            logger.error(f"CFPB Monitor failed: {e}")
+
+
+
+        # 2e. State Regulator Monitor (NY DFS & CA DFPI)
+        try:
+            from agents.state_legislative_agent import StateLegislativeAgent
+            state_monitor = StateLegislativeAgent()
+            state_out = state_monitor.execute_task({})
+            state_recs = state_out.get("records", [])
+            api_records.extend(state_recs)
+            logger.info(f"[{self.__class__.__name__}] State Regulator Monitor: Collected {len(state_recs)} records")
+        except Exception as e:
+            logger.error(f"State Regulator Monitor failed: {e}")
+
+
+        # 2f. Judicial Monitor
+        try:
+            from agents.judicial_monitor import JudicialMonitorAgent
+            judicial_monitor = JudicialMonitorAgent()
+            jud_out = judicial_monitor.execute_task({"run_id": run_id})
+            jud_recs = jud_out.get("records", [])
+            api_records.extend(jud_recs)
+            logger.info(f"[{self.__class__.__name__}] Judicial Monitor: Collected {len(jud_recs)} records")
+        except Exception as e:
+            logger.error(f"Judicial Monitor failed: {e}")
+
+        # 3. STREAM C: SENTIMENT & SOCIAL MONITORS
+        logger.info(f"[{self.__class__.__name__}] Starting Stream C: Sentiment & Social Monitors")
+        sentiment_records = []
+        
+
+        # 3b. News Monitor
+        try:
+            from agents.news_monitor_agent import NewsMonitorAgent
+            news_monitor = NewsMonitorAgent()
+            news_out = news_monitor.execute_task({"run_id": run_id})
+            sentiment_records.extend(news_out.get("records", []))
+            logger.info(f"[{self.__class__.__name__}] News Monitor: Collected {len(news_out.get('records', []))} records")
+        except Exception as e:
+            logger.error(f"News Monitor failed: {e}")
+
+        # 3a. Market Sentiment
+        try:
+            market_out = market_sentiment.execute_task({"type": "monitor_market_sentiment", "lookback_hours": 24})
+            for item in market_out.get("analyzed_content", []):
+                sentiment_records.append({
+                    "title": item.get('title', 'Market Sentiment'),
+                    "snippet": f"Sentiment Score: {item.get('sentiment_score', 0)} | Phrases: {', '.join(item.get('key_phrases', []))}",
+                    "source": item.get('source', 'Unknown Market Source'),
+                    "url": item.get('url', ''),
+                    "date": item.get('published', '')
+                })
+            logger.info(f"[{self.__class__.__name__}] Market Sentiment: Collected {len(market_out.get('analyzed_content', []))} records")
+        except Exception as e:
+            logger.error(f"Market Sentiment Monitor failed: {e}")
+
+        # 3b. Public Statements
+        try:
+            statement_out = public_statement.execute_task({"run_id": run_id})
+            for item in statement_out.get("records", []):
+                sentiment_records.append({
+                    "title": item.get('title', 'Public Statement'),
+                    "snippet": item.get('text_context', ''),
+                    "source": item.get('source', 'Social Monitor'),
+                    "url": "",
+                    "date": ""
+                })
+            logger.info(f"[{self.__class__.__name__}] Public Statements: Collected {len(statement_out.get('records', []))} records")
+        except Exception as e:
+            logger.error(f"Public Statement Monitor failed: {e}")
+            
+        all_records.extend(sentiment_records)
+        all_records.extend(api_records)
+        logger.info(f"[{self.__class__.__name__}] Total combined records: {len(all_records)}")
+
+        # GOLDEN RUN TRUNCATION
+        if golden_run and all_records:
+            all_records = all_records[:1]
+            logger.info(f"[{self.__class__.__name__}] GOLDEN RUN: Truncated to {len(all_records)} record")
+
+        all_records = deduplicate_records(all_records)
+        logger.info(f"[{self.__class__.__name__}] Deduplicated down to {len(all_records)} unique records")
+
+        # 3. PIPELINE EXECUTION
+        logger.info(f"[{self.__class__.__name__}] Expanding context...")
+        context_out = ContextExpansionAgent().execute_task({"records": all_records, "run_id": run_id})
+        expanded_records = context_out.get("records", [])
+        
+        logger.info(f"[{self.__class__.__name__}] Analyzing impacts...")
+        impact_out = ImpactAnalyzerAgent().execute_task({"records": expanded_records, "run_id": run_id})
+        findings = impact_out.get("records", [])
+
+        # SIMULATED HUMAN FEEDBACK LOOP
+        low_impact_findings = [f for f in findings if f.get("impact_score") == "low"]
+        if low_impact_findings:
+            feedback_target = low_impact_findings[0]
+            logger.info(f"[{self.__class__.__name__}] Submitting low-impact finding to Human Review Queue...")
+            human_feedback.execute_task({
+                "record_id": feedback_target.get("url", "unknown_id"),
+                "human_decision": "monitor",
+                "reason": "Simulated golden dataset override for edge-case regulation.",
+                "original_record": feedback_target
+            })
+        
+        logger.info(f"[{self.__class__.__name__}] Compressing {len(findings)} findings...")
+        compression_out = ContextCompressorAgent().execute_task({"findings": findings, "run_id": run_id})
+        compressed_findings = compression_out.get("findings", [])
+        
+        logger.info(f"[{self.__class__.__name__}] Extracting entities...")
+        entity_out = EntityResolutionAgent().execute_task({"findings": compressed_findings, "run_id": run_id})
+        entity_enriched_findings = entity_out.get("findings", [])
+        
+        logger.info(f"[{self.__class__.__name__}] Scoring risk...")
+        risk_out = RiskScoringAgent().execute_task({"findings": entity_enriched_findings, "run_id": run_id})
+        risk_scored_findings = risk_out.get("findings", [])
+        
+        logger.info(f"[{self.__class__.__name__}] Validating findings...")
+        val_out = ValidationAgent().execute_task({"findings": risk_scored_findings, "run_id": run_id})
+        validated_findings = val_out.get("findings", [])
+        
+        try:
+            graph_connector = GraphConnector()
+            graph_connector.sync_findings(validated_findings, run_id)
+            graph_connector.close()
+            logger.info(f"[{self.__class__.__name__}] Synced {len(validated_findings)} findings to Neo4j")
+        except Exception as e:
+            logger.error(f"Failed to sync to Neo4j: {e}")
+        
+        logger.info(f"[{self.__class__.__name__}] Generating final synthesis report...")
+        synth_out = ResearchSynthesisAgent().execute_task({"findings": compressed_findings, "run_id": run_id})
+        ReportingAgent().execute_task({"report_dir": report_dir, "findings": validated_findings, "synthesis": synth_out})
+        logger.info(f"[{self.__class__.__name__}] Swarm complete! Report at {report_dir}")
+        
+        return {"report_dir": report_dir}
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--golden-run', action='store_true')
+    args = parser.parse_args()
+    orchestrator = PolicyOrchestratorAgent()
+    orchestrator.run_swarm(os.getenv("CONGRESS_GOV_API_KEY"), os.getenv("LEXISNEXIS_API_KEY"), golden_run=args.golden_run)

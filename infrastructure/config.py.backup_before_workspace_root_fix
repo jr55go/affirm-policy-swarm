@@ -1,0 +1,183 @@
+"""
+Configuration management for the Affirm Policy Swarm.
+Loads settings from environment variables with fallback to defaults.
+"""
+
+import os
+from typing import Dict, Any, Optional
+from dataclasses import dataclass, field
+import json
+
+
+
+def load_env_file(filepath: str = None) -> None:
+    """Load environment variables from a .env file."""
+    if filepath is None:
+        # Default to .env in the current working directory
+        filepath = ".env"
+    try:
+        with open(filepath, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '=' in line:
+                    key, value = line.split('=', 1)
+                    os.environ[key.strip()] = value.strip()
+    except FileNotFoundError:
+        pass  # No .env file, continue
+
+@dataclass
+class Neo4jConfig:
+    uri: str = "bolt://localhost:7687"
+    username: str = "neo4j"
+    password: str = "password"
+    database: str = "policygraph"
+    max_connection_lifetime: int = 3600
+    max_connection_pool_size: int = 50
+    connection_acquisition_timeout: int = 60
+
+
+@dataclass
+class RedisConfig:
+    host: str = "localhost"
+    port: int = 6379
+    password: str = ""
+    database: int = 0
+    socket_timeout: int = 5
+    socket_connect_timeout: int = 5
+    retry_on_timeout: bool = True
+    health_check_interval: int = 30
+    connection_pool_size: int = 50
+
+
+@dataclass
+class VaultConfig:
+    addr: str = "http://localhost:8200"
+    token: str = ""
+    namespace: str = "affirm-policy-swarm"
+    timeout: int = 30
+    verify: bool = True
+
+
+@dataclass
+class ModelConfig:
+    # Local LLM serving (vLLM, TensorRT-LLM, etc.)
+    local_endpoint: str = "http://localhost:8000/v1"
+    local_model: str = "nemotron-3-super-120b"
+    local_temperature: float = 0.1
+    local_max_tokens: int = 4096
+
+    # API-based models as fallback
+    nemotron_endpoint: str = "https://integrate.api.nvidia.com/v1"
+    nemotron_model: str = "nemotron-4-340b"
+    nemotron_temperature: float = 0.1
+    nemotron_max_tokens: int = 4096
+
+    deepseek_endpoint: str = "https://api.deepseek.com/v1"
+    deepseek_model: str = "deepseek-chat"
+    deepseek_temperature: float = 0.2
+    deepseek_max_tokens: int = 8192
+
+
+@dataclass
+class SwarmConfig:
+    neo4j: Neo4jConfig = field(default_factory=Neo4jConfig)
+    redis: RedisConfig = field(default_factory=RedisConfig)
+    vault: VaultConfig = field(default_factory=VaultConfig)
+    models: ModelConfig = field(default_factory=ModelConfig)
+
+    # Swarm-specific settings
+    scope_validation_enabled: bool = True
+    deduplication_window_hours: int = 4
+    max_concurrent_agents: int = 10
+    agent_heartbeat_interval: int = 30
+    logging_level: str = "INFO"
+
+    # Policy sources configuration
+    legislative_sources: Dict[str, Any] = field(default_factory=lambda: {
+        "congress_gov": {"enabled": True, "api_key": ""},
+        "legiscan": {"enabled": True, "api_key": ""},
+        "state_legislature": {"enabled": True, "sources": ["ca", "ny", "tx"]}
+    })
+
+    regulatory_sources: Dict[str, Any] = field(default_factory=lambda: {
+        "federal_register": {"enabled": True, "api_key": ""},
+        "ecfr": {"enabled": True},
+        "state_registers": {"enabled": True, "sources": ["ca", "ny"]}
+    })
+
+    research_sources: Dict[str, Any] = field(default_factory=lambda: {
+        "semantic_scholar": {"enabled": True, "api_key": ""},
+        "ssrn": {"enabled": True},
+        "nber": {"enabled": True}
+    })
+
+
+def load_config() -> SwarmConfig:
+    """Load configuration from environment variables with fallback to defaults."""
+    # Load environment variables from .env file in workspace root
+    workspace_root = os.path.join(os.path.dirname(__file__), '..', '..')
+    env_path = os.path.join(workspace_root, '\.env')
+    load_env_file(env_path)
+    config = SwarmConfig()
+
+    # Neo4j configuration
+    config.neo4j.uri = os.getenv("NEO4J_URI", config.neo4j.uri)
+    config.neo4j.username = os.getenv("NEO4J_USERNAME", config.neo4j.username)
+    config.neo4j.password = os.getenv("NEO4J_PASSWORD", config.neo4j.password)
+    config.neo4j.database = os.getenv("NEO4J_DATABASE", config.neo4j.database)
+
+    # Redis configuration
+    config.redis.host = os.getenv("REDIS_HOST", config.redis.host)
+    config.redis.port = int(os.getenv("REDIS_PORT", str(config.redis.port)))
+    config.redis.password = os.getenv("REDIS_PASSWORD", config.redis.password)
+    config.redis.database = int(os.getenv("REDIS_DATABASE", str(config.redis.database)))
+
+    # Vault configuration
+    config.vault.addr = os.getenv("VAULT_ADDR", config.vault.addr)
+    config.vault.token = os.getenv("VAULT_TOKEN", config.vault.token)
+    config.vault.namespace = os.getenv("VAULT_NAMESPACE", config.vault.namespace)
+
+    # Model configuration
+    config.models.local_endpoint = os.getenv("LOCAL_LLM_ENDPOINT", config.models.local_endpoint)
+    config.models.local_model = os.getenv("LOCAL_LLM_MODEL", config.models.local_model)
+    config.models.nemotron_endpoint = os.getenv("NEMOTRON_ENDPOINT", config.models.nemotron_endpoint)
+    config.models.nemotron_model = os.getenv("NEMOTRON_MODEL", config.models.nemotron_model)
+    config.models.deepseek_endpoint = os.getenv("DEEPSEEK_ENDPOINT", config.models.deepseek_endpoint)
+    config.models.deepseek_model = os.getenv("DEEPSEEK_MODEL", config.models.deepseek_model)
+
+    # Swarm settings
+    config.scope_validation_enabled = os.getenv("SCOPE_VALIDATION_ENABLED", "true").lower() == "true"
+    config.deduplication_window_hours = int(os.getenv("DEDUPLICATION_WINDOW_HOURS", str(config.deduplication_window_hours)))
+    config.max_concurrent_agents = int(os.getenv("MAX_CONCURRENT_AGENTS", str(config.max_concurrent_agents)))
+    config.agent_heartbeat_interval = int(os.getenv("AGENT_HEARTBEAT_INTERVAL", str(config.agent_heartbeat_interval)))
+    config.logging_level = os.getenv("LOGGING_LEVEL", config.logging_level)
+    
+    # Policy sources API keys from environment variables
+    config.legislative_sources["congress_gov"]["api_key"] = os.getenv("CONGRESS_GOV_API_KEY", "")
+    config.legislative_sources["legiscan"]["api_key"] = os.getenv("LEGISCAN_API_KEY", "")
+    config.regulatory_sources["federal_register"]["api_key"] = os.getenv("FEDERAL_REGISTER_API_KEY", "")
+    config.research_sources["semantic_scholar"]["api_key"] = os.getenv("SEMANTIC_SCHOLAR_API_KEY", "")
+
+    return config
+
+
+def load_config_from_file(filepath: str) -> SwarmConfig:
+    """Load configuration from a JSON file."""
+    with open(filepath, 'r') as f:
+        data = json.load(f)
+
+    # For simplicity, we'll return default config and note that file loading
+    # would be implemented based on the specific JSON structure
+    # In a full implementation, this would parse the JSON into the dataclass structure
+    return load_config()
+
+
+if __name__ == "__main__":
+    # For testing configuration loading
+    config = load_config()
+    print(f"Neo4j URI: {config.neo4j.uri}")
+    print(f"Redis Host: {config.redis.host}:{config.redis.port}")
+    print(f"Local LLM Endpoint: {config.models.local_endpoint}")
+    print(f"Max Concurrent Agents: {config.max_concurrent_agents}")

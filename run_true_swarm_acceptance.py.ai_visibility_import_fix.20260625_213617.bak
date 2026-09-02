@@ -1,0 +1,79 @@
+import os, sys, uuid, requests
+import re
+sys.path.insert(0, os.getcwd())
+cg_key = os.environ.get("CONGRESS_GOV_API_KEY", "")
+ls_key = os.environ.get("LEGISCAN_API_KEY", "")
+
+if not cg_key or not ls_key:
+    print("❌ FAIL: Missing environment target credentials."); sys.exit(1)
+
+from agents.orchestrator import PolicyOrchestratorAgent
+from infrastructure.database import neo4j_session
+def _redact_secrets(value):
+    value = str(value)
+    value = re.sub(r"api_key=[^&\\s)]+", "api_key=REDACTED", value)
+    value = re.sub(r"key=[^&\\s)]+", "key=REDACTED", value)
+    value = re.sub(r"CONGRESS_GOV_API_KEY=[^\\s]+", "CONGRESS_GOV_API_KEY=REDACTED", value)
+    value = re.sub(r"LEGISCAN_API_KEY=[^\\s]+", "LEGISCAN_API_KEY=REDACTED", value)
+    return value
+
+try:
+    orchestrator = PolicyOrchestratorAgent()
+    swarm_res = orchestrator.run_swarm(cg_key, ls_key)
+    run_id = swarm_res["run_id"]
+    
+    # AI reasoning visibility from report.json
+    report_path = os.path.join("reports", "live_runs", run_id, "report.json")
+    llm_reasoning_active = False
+    llm_calls_made = 0
+    fallback_mode = False
+    models_used = []
+    agents_using_llm = []
+    try:
+        with open(report_path, 'r') as f:
+            report = json.load(f)
+        ai_reasoning = report.get("ai_reasoning", {})
+        llm_calls_made = ai_reasoning.get("llm_calls_made", 0)
+        fallback_mode = ai_reasoning.get("fallback_mode", False)
+        models_used = ai_reasoning.get("models_used", [])
+        agents_using_llm = ai_reasoning.get("agents_using_llm", [])
+        decision_traces_written = ai_reasoning.get("decision_traces_written", False)
+        llm_reasoning_active = llm_calls_made > 0 and decision_traces_written
+    except Exception:
+        # If we can't read the report, use defaults (all false/empty)
+        pass
+    
+    models_used_str = ",".join(models_used) if models_used else "[]"
+    agents_using_llm_str = ",".join(agents_using_llm) if agents_using_llm else "[]"
+    print(f"LLM_REASONING_ACTIVE={'true' if llm_reasoning_active else 'false'}")
+    print(f"LLM_CALLS_MADE={llm_calls_made}")
+    print(f"FALLBACK_MODE={'true' if fallback_mode else 'false'}")
+    print(f"MODELS_USED={models_used_str}")
+    print(f"AGENTS_USING_LLM={agents_using_llm_str}")
+    
+    # Readback query isolated solely by the current thread token
+    if swarm_res.get("records_count", 0) == 0:
+        print(f"\n🏆 [TRUE SWARM PASS] Run completed with zero accepted BNPL findings; no Neo4j readback required: {run_id}")
+        sys.exit(0)
+
+    with neo4j_session() as session:
+        res = session.run("""
+        MATCH (b:LegislativeItem)
+        WHERE b.run_id = $run_id AND b.swarm_id = 'affirm_policy_swarm' AND b.project_scope = 'affirm_bnpl_policy'
+        RETURN b.bill_id AS bill_id, b.agent_id AS agent_id
+        """, {"run_id": run_id})
+        nodes = [row for row in res]
+        
+    expected_count = swarm_res.get("accepted_bnpl_findings")
+    if expected_count is None:
+        expected_count = swarm_res.get("neo4j_matched", 0)
+    actual_count = len(nodes)
+
+    if actual_count != expected_count:
+        print(f"❌ FAIL: Swarm isolation read-back mismatch. expected={expected_count} actual={actual_count}")
+        sys.exit(5)
+        
+    print(f"\n🏆 [TRUE SWARM PASS] Run isolated completely via tokens: {run_id}")
+    sys.exit(0)
+except Exception as e:
+    print(f"❌ CRITICAL INTER-AGENT SWARM ACCIDENT: {_redact_secrets(e)}"); sys.exit(6)

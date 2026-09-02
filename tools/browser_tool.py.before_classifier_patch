@@ -1,0 +1,47 @@
+import asyncio
+from playwright.async_api import async_playwright
+import logging
+
+logger = logging.getLogger(__name__)
+
+async def fetch_and_extract_text(url: str) -> str:
+    """
+    Fetch and extract text from a URL using Playwright (headless Chromium).
+    
+    Args:
+        url (str): The URL to fetch
+        
+    Returns:
+        str: Extracted text content from the page
+        
+    Raises:
+        Exception: If there's an error fetching or extracting the content
+    """
+    try:
+        async with async_playwright() as p:
+            # Launch headless browser
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            
+            # Navigate to URL
+            await page.goto(url, wait_until="networkidle", timeout=30000)
+            
+            # Extract text content
+            text = await page.inner_text("body")
+            
+            # Close browser
+            await browser.close()
+            
+            return text.strip()
+            
+    except Exception as e:
+        logger.error(f"Error fetching and extracting text from {url}: {str(e)}")
+        # Return empty string or raise? Let's return empty string for now
+        return f"Error: {str(e)}"
+
+# For synchronous usage, we provide a wrapper
+def fetch_and_extract_text_sync(url: str) -> str:
+    """
+    Synchronous wrapper for fetch_and_extract_text.
+    """
+    return asyncio.run(fetch_and_extract_text(url))

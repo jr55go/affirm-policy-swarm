@@ -1,0 +1,518 @@
+"""
+Congress.gov Connector: Concrete implementation for Congress.gov data source.
+Uses the Congress.gov API for machine-readable access to federal legislation.
+"""
+
+import logging
+import time
+import os
+from typing import Any, Dict, List, Optional
+import requests
+from requests.exceptions import RequestException
+from datetime import datetime, timezone
+
+from ..base_connector import BaseSourceConnector
+from ..normalization import NormalizedPolicyEvent
+from ..connector_checkpoint import CheckpointManager
+from ..connector_health import ConnectorStatus, HealthTracker
+
+logger = logging.getLogger(__name__)
+
+
+class CongressConnector(BaseSourceConnector):
+    """
+    Concrete connector for the Congress.gov data source.
+    Fetches and normalizes federal legislation data from Congress.gov API.
+    """
+
+    def __init__(self, config: Dict[str, Any]):
+        """
+        Initialize the CongressConnector.
+
+        Args:
+            config: Dictionary containing configuration for the connector
+                   Expected keys: 'api_base_url', 'api_key', 'timeout', 'rate_limit_delay'
+        """
+        super().__init__("Congress.gov", config)
+        self.api_base_url = config.get('api_base_url', 'https://api.congress.gov/v3')
+        self.api_key = config.get('api_key') or os.environ.get('CONGRESS_GOV_API_KEY')
+        self.timeout = config.get('timeout', 30)
+        self.rate_limit_delay = config.get('rate_limit_delay', 1.0)
+        self._session = None
+        self._checkpoint_manager = CheckpointManager()
+        self.logger = logging.getLogger(self.__class__.__name__)
+
+    def connect(self) -> bool:
+        """
+        Establish connection to the Congress.gov API by creating a requests session.
+
+        Returns:
+            bool: True if connection successful, False otherwise
+        """
+        try:
+            self.logger.info("Connecting to Congress.gov API")
+            self._session = requests.Session()
+            
+            # Set headers including API key if available
+            headers = {
+                'User-Agent': 'AffirmPolicySwarm/1.0 (Policy Intelligence System)',
+                'Accept': 'application/json'
+            }
+            
+            if self.api_key:
+                headers['X-API-Key'] = self.api_key
+                
+            self._session.headers.update(headers)
+            self._connected = True
+            self.logger.info("Connection to Congress.gov API established")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to connect to Congress.gov API: {str(e)}")
+            self._connected = False
+            return False
+
+    def health_check(self) -> Dict[str, Any]:
+        """
+        Check if the connection to the Congress.gov API is healthy.
+
+        Returns:
+            Dictionary containing health status information
+        """
+        if not self._connected or not self._session:
+            return {
+                "status": ConnectorHealthState.DOWN.value,
+                "error": "Not connected",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+
+        try:
+            # Make a minimal request to check API availability
+            # Using the bill endpoint with a limit of 1 for quick response
+            url = f"{self.api_base_url}/bill"
+            params = {
+                'limit': 1
+            }
+            
+            response = self._session.get(url, params=params, timeout=self.timeout)
+            
+            if response.status_code == 200:
+                self.logger.debug("Congress.gov API health check passed")
+                return {
+                    "status": ConnectorHealthState.HEALTHY.value,
+                    "response_time_ms": response.elapsed.total_seconds() * 1000,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            else:
+                self.logger.warning(f"Congress.gov API health check failed with status {response.status_code}")
+                return {
+                    "status": ConnectorHealthState.DEGRADED.value,
+                    "error": f"HTTP {response.status_code}",
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+        except RequestException as e:
+            self.logger.error(f"Congress.gov API health check failed: {str(e)}")
+            return {
+                "status": ConnectorHealthState.DOWN.value,
+                "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        except Exception as e:
+            self.logger.error(f"Unexpected error during Congress.gov API health check: {str(e)}")
+            return {
+                "status": ConnectorHealthState.DOWN.value,
+                "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+
+    def fetch(self) -> List[Dict[str, Any]]:
+        """
+        Retrieve data from the Congress.gov API.
+
+        Returns:
+        List of dictionaries containing the retrieved bill data
+        """
+        if not self.is_connected or not self._session:
+            if not self.connect():
+                self.logger.error("Failed to establish connection for fetch operation")
+                return []
+
+        try:
+            self.logger.info("Fetching data from Congress.gov API")
+            
+            # Determine query parameters: use custom if set, otherwise default
+            if self.last_query_params is not None:
+                params = self.last_query_params
+                self.last_query_params = None  # Reset after use
+            else:
+                params = {
+                    'limit': 20,  # Get a reasonable batch of bills
+                    'sort': '-updateDate'  # Most recently updated first
+                }
+            
+            url = f"{self.api_base_url}/bill"
+            
+            response = self._session.get(url, params=params, timeout=self.timeout)
+            response.raise_for_status()
+            
+            # Parse JSON response
+            response_data = response.json()
+            
+            # Congress.gov API returns bills under 'bills' key
+            raw_data = response_data.get('bills', [])
+            
+            # Ensure we got a list
+            if not isinstance(raw_data, list):
+                self.logger.warning(f"Expected list from Congress.gov API, got {type(raw_data)}")
+                raw_data = []
+                    
+            self.logger.info(f"Retrieved {len(raw_data)} bills from Congress.gov API")
+            return raw_data
+            
+        except RequestException as e:
+            self.logger.error(f"Request to Congress.gov API failed: {str(e)}")
+            return []
+        except Exception as e:
+            self.logger.error(f"Unexpected error fetching data from Congress.gov API: {str(e)}")
+            return []
+
+    def normalize(self, raw_data: Dict[str, Any]) -> NormalizedPolicyEvent:
+        pass
+
+
+
+        """
+
+        Normalize retrieved Congress.gov bill data to the NormalizedPolicyEvent schema.
+
+        Args:
+
+        raw_data: Dictionary containing raw Congress.gov bill data
+
+        Returns:
+
+        NormalizedPolicyEvent object containing normalized policy event data
+
+        """
+
+        try:
+
+        # Extract relevant fields from Congress.gov bill data
+
+        congress = raw_data.get('congress', 0)
+
+        number = raw_data.get('number', '')
+
+        title = raw_data.get('title', '')
+
+        bill_type = raw_data.get('type', '')  # e.g., 'hr', 's', 'hjres', etc.
+
+        bill_type_display = raw_data.get('typeDisplay', '')
+
+        origin_chamber = raw_data.get('originChamber', '')
+
+        origin_chamber_display = raw_data.get('originChamberDisplay', '')
+
+        last_version = raw_data.get('lastVersion', {})
+
+        bill_url = raw_data.get('url', '')
+
+        # Get latest action information
+
+        latest_action = raw_data.get('latestAction', {})
+
+        action_date = latest_action.get('actionDate', '')
+
+        action_text = latest_action.get('text', '')
+
+        # Get sponsors
+
+        sponsors = raw_data.get('sponsors', [])
+
+        sponsor_names = []
+
+        if isinstance(sponsors, list):
+
+        for sponsor in sponsors:
+
+        if isinstance(sponsor, dict):
+
+        name = sponsor.get('fullName', '')
+
+        if name:
+
+        sponsor_names.append(name)
+
+        elif isinstance(sponsor, str):
+
+        sponsor_names.append(sponsor)
+
+        # Get committees
+
+        committees = raw_data.get('committees', [])
+
+        committee_names = []
+
+        if isinstance(committees, list):
+
+        for committee in committees:
+
+        if isinstance(committee, dict):
+
+        name = committee.get('name', '')
+
+        if name:
+
+        committee_names.append(name)
+
+        elif isinstance(committee, str):
+
+        committee_names.append(committee)
+
+        # Get subjects (policy topics)
+
+        subjects = raw_data.get('subjects', [])
+
+        subject_list = []
+
+        if isinstance(subjects, list):
+
+        subject_list = [str(s) for s in subjects if s]
+
+        # Get summary if available
+
+        summary = ""
+
+        if last_version:
+
+        summary = last_version.get('note', '') or last_version.get('title', '')
+
+        if not summary:
+
+        summary = f"{bill_type_display.upper()} {number} - {title}"
+
+        # Determine event date from action date or current date
+
+        try:
+
+        if action_date:
+
+        # Congress.gov dates are typically in ISO format
+
+        event_date = datetime.fromisoformat(action_date.replace('Z', '+00:00'))
+
+        else:
+
+        event_date = datetime.now(timezone.utc)
+
+        except ValueError:
+
+        event_date = datetime.now(timezone.utc)
+
+        # Determine event type based on bill stage/action
+
+        event_type = action_text if action_text else bill_type_display
+
+        # Create normalized event using the schema
+
+        normalized_event = NormalizedPolicyEvent(
+
+        source_name="Congress.gov",
+
+        source_type="Legislature",
+
+        jurisdiction="Federal",
+
+        title=title or f"{bill_type_display.upper()} {number}",
+
+        summary=summary or f"Congressional bill {bill_type_display.upper()} {number}",
+
+        event_type=event_type,
+
+        event_date=event_date,
+
+        url=bill_url or f"https://www.congress.gov/bill/{congress}/{bill_type}/{number}",
+
+        organizations=[],  # Congress.gov bills don't typically have organizational sponsors in the same way
+
+        people=sponsor_names,  # Sponsors are legislators/people
+
+        committees=committee_names,
+
+        agencies=[],  # Not typically applicable for bills
+
+        legislation=[title] if title else [f"{bill_type_display.upper()} {number}"],  # The bill itself
+
+        topics=subject_list,
+
+        keywords=subject_list,  # Reuse subjects as keywords for now
+
+        confidence=0.85,  # High confidence for official congressional data
+
+        evidence=f"Congress.gov API data: {action_text}" if action_text else "Official congressional bill data",
+
+        raw_payload=raw_data  # Store the original Congress.gov bill data
+
+        )
+
+        return normalized_event
+
+        except Exception as e:
+
+        self.logger.error(f"Error normalizing Congress.gov bill data: {str(e)}")
+
+        # Return a minimal valid normalized event in case of error
+
+from datetime import datetime
+        return NormalizedPolicyEvent(
+        source_name="Congress.gov",
+        source_type="Legislature",
+        jurisdiction="Federal",
+        title="Error processing Congress.gov bill",
+        summary=f"Failed to normalize Congress.gov bill data: {str(e)}",
+        event_type="error",
+        event_date=datetime.now(timezone.utc),
+        url="",
+        organizations=[],
+        people=[],
+        committees=[],
+        agencies=[],
+        legislation=[],
+        topics=[],
+        keywords=[],
+        confidence=0.0,
+        evidence=f"Normalization error: {str(e)}",
+        raw_payload=raw_data
+        )
+            def incremental_sync(self) -> Dict[str, Any]:
+        """
+        Perform incremental synchronization since last checkpoint.
+                Returns:
+        Dictionary containing new data and metadata about the sync
+        """
+        self.logger.info("Performing incremental sync for Congress.gov connector")
+                # Retrieve the current state/checkpoint
+        cursor = self.checkpoint_manager.get_cursor(self.source_name)
+                # Check for last sync timestamp
+        last_sync_time = cursor.get('last_sync_time')
+                # Build query parameters for incremental fetch
+        params = {
+        'limit': 50,  # Reasonable batch size for incremental updates
+        'sort': '-updateDate'  # Most recently updated first
+        }
+                # If we have a last sync time, we could filter by update date
+        # Note: Congress.gov API may not support direct timestamp filtering on all endpoints
+        # For now, we'll fetch recent items and let deduplication handle filtering
+        # In a production implementation, we might use the updateDate field for filtering
+                # Fetch new data
+        raw_data_list = self.fetch()
+                # Update checkpoint with current timestamp
+        new_cursor = {
+        'last_sync_time': datetime.now(timezone.utc).isoformat(),
+        'last_count': len(raw_data_list)
+        }
+                # Save the updated checkpoint
+        self.checkpoint(new_cursor)
+                # Return the fetched data with metadata
+        return {
+        'new_data': raw_data_list,
+        'count': len(raw_data_list),
+        'sync_time': datetime.now(timezone.utc).isoformat(),
+        'source': self.source_name
+        }
+            def checkpoint(self, cursor_data: Dict[str, Any]) -> None:
+        """
+        Save current synchronization checkpoint.
+                Args:
+        cursor_data: Dictionary containing checkpoint data to save
+        """
+        self.checkpoint_manager.save_cursor(self.source_name, cursor_data)
+            def deduplicate(self, records: List[NormalizedPolicyEvent]) -> List[NormalizedPolicyEvent]:
+        """
+        Remove duplicate records based on bill number and congress.
+                Args:
+        records: List of normalized policy events
+                Returns:
+        List of deduplicated normalized policy events
+        """
+        seen = set()
+        deduplicated = []
+                for record in records:
+        # Create a unique key based on bill identifier from raw payload
+        raw_payload = record.raw_payload
+        congress = raw_payload.get('congress', 0)
+        number = raw_payload.get('number', '')
+        bill_type = raw_payload.get('type', '')
+                # Create a composite key
+        key = f"{congress}-{bill_type}-{number}"
+                if key not in seen:
+        seen.add(key)
+        deduplicated.append(record)
+                self.logger.info(f"Deduplicated {len(records)} records to {len(deduplicated)} unique bills")
+        return deduplicated
+            def rate_limit(self) -> None:
+        """Apply rate limiting to prevent overwhelming the Congress.gov API."""
+        time.sleep(self.rate_limit_delay)
+            def retry(self, exception: Exception, attempt: int) -> bool:
+        """
+        Determine whether to retry an operation after an exception.
+                Args:
+        exception: The exception that occurred
+        attempt: Current attempt number (starting from 1)
+                Returns:
+        True if the operation should be retried, False otherwise
+        """
+        # Don't retry client errors (4xx) except 429 (rate limit)
+        if isinstance(exception, RequestException):
+        if hasattr(exception, 'response') and exception.response is not None:
+        status_code = exception.response.status_code
+        if 400 <= status_code < 500:
+        # Don't retry client errors except rate limiting
+        return status_code == 429 and attempt < 3
+        elif 500 <= status_code < 600:
+        # Retry server errors
+        return attempt < 3
+        else:
+        # Retry on connection errors, timeouts, etc.
+        return attempt < 3
+        else:
+        # Retry on connection errors
+        return attempt < 3
+        else:
+        # Retry on other exceptions up to 3 times
+        return attempt < 3
+            def metadata(self) -> Dict[str, Any]:
+        """
+        Return metadata about the connector and its capabilities.
+                Returns:
+        Dictionary containing connector metadata
+        """
+        return {
+        "name": self.source_name,
+        "type": "Legislature",
+        "jurisdiction": "Federal",
+        "description": "Congress.gov API connector for federal legislation data",
+        "version": "1.0.0",
+        "endpoint": self.api_base_url,
+        "rate_limit": f"{1/self.rate_limit_delay:.1f} requests/second",
+        "requires_api_key": bool(self.api_key),
+        "supported_operations": [
+        "fetch", "normalize", "incremental_sync", "health_check"
+        ]
+        }
+            def shutdown(self) -> bool:
+        """
+        Perform clean shutdown of the connector.
+                Returns:
+        bool: True if shutdown successful, False otherwise
+        """
+        try:
+        self.logger.info("Shutting down Congress.gov connector")
+        if self._session:
+        self._session.close()
+        self._session = None
+        self._connected = False
+        self.logger.info("Congress.gov connector shut down successfully")
+        return True
+        except Exception as e:
+        self.logger.error(f"Error during Congress.gov connector shutdown: {str(e)}")
+        return False

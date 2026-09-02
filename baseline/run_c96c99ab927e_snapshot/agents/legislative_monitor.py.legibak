@@ -1,0 +1,542 @@
+"""
+Legislative Monitor Agent for the Affirm Policy Swarm.
+Responsible for tracking bills, resolutions, amendments across jurisdictions.
+"""
+
+import time
+import uuid
+import hashlib
+import requests
+from typing import Dict, Any, List, Optional
+from datetime import datetime, timezone
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from load_swarm_jobs import load_swarm_jobs
+
+from .base_agent import BaseAgent
+from infrastructure.config import load_config
+from infrastructure.database import neo4j_session
+
+
+class LegislativeMonitorAgent(BaseAgent):
+    """Legislative Monitor Agent for tracking bills and legislation."""
+    
+    def __init__(self, agent_id: str = None):
+        super().__init__(agent_id or f"leg-monitor-{str(uuid.uuid4())[:8]}", "Legislative Monitor Agent")
+        self.config = load_config()
+        self.congress_gov_api_key = self.config.legislative_sources["congress_gov"]["api_key"]
+        self.congress_gov_base_url = "https://api.congress.gov/v3"
+        
+
+    def _get_congress_gov_bill(self, bill_type: str, bill_number: int, congress: int) -> Optional[Dict[str, Any]]:
+        """Fetch a specific bill from Congress.gov API."""
+        if not self.congress_gov_api_key:
+            self.log_thought("Congress.gov API key not configured, skipping API call")
+            return None
+            
+        try:
+            url = f"{self.congress_gov_base_url}/{congress}/bills/{bill_type}/{bill_number}"
+            params = {
+                "api_key": self.congress_gov_api_key,
+                "format": "json"
+            }
+            
+            response = requests.get(url, params=params, timeout=30)
+            if response.status_code == 200:
+                data = response.json()
+                bill = data.get("bill", {})
+                if bill:
+                    # Extract relevant information
+                    return {
+                        "bill_id": f"{bill_type.upper()}-{bill_number}-{congress}",
+                        "title": bill.get("title", ""),
+                        "sponsor": self._get_sponsor_name(bill.get("sponsors", [])),
+                        "introduced_date": bill.get("introducedDate", ""),
+                        "latest_action": bill.get("latestAction", {}).get("text", ""),
+                        "url": bill.get("url", ""),
+                        "keywords": self._extract_keywords_from_bill(bill),
+                        "relevance_score": 0.95  # High relevance for specific bill lookup
+                    }
+            else:
+                self.log_thought(f"Congress.gov API returned status {response.status_code} for {bill_type} {bill_number}")
+                
+        except Exception as e:
+            self.log_thought(f"Error fetching bill {bill_type} {bill_number} from Congress.gov: {e}")
+            
+        return None
+    
+    def _search_congress_gov_bills(self, query: str, congress: int, limit: int = 10) -> List[Dict[str, Any]]:
+        """Search for bills on Congress.gov API."""
+        if not self.congress_gov_api_key:
+            self.log_thought("Congress.gov API key not configured, skipping API call")
+            return []
+            
+        try:
+            url = f"{self.congress_gov_base_url}/{congress}/bills"
+            params = {
+                "query": query,
+                "api_key": self.congress_gov_api_key,
+                "format": "json",
+                "pageSize": limit
+            }
+            
+            response = requests.get(url, params=params, timeout=30)
+            if response.status_code == 200:
+                data = response.json()
+                bills = data.get("bills", [])
+                results = []
+                
+                for bill in bills:
+                    bill_info = {
+                        "bill_id": f"{bill.get("type", "")}-{bill.get("number", "")}-{congress}",
+                        "title": bill.get("title", ""),
+                        "sponsor": self._get_sponsor_name(bill.get("sponsors", [])),
+                        "introduced_date": bill.get("introducedDate", ""),
+                        "latest_action": bill.get("latestAction", {}).get("text", ""),
+                        "url": bill.get("url", ""),
+                        "keywords": self._extract_keywords_from_bill(bill),
+                        "relevance_score": 0.8  # Good relevance for search results
+                    }
+                    results.append(bill_info)
+                
+                return results
+            else:
+                self.log_thought(f"Congress.gov search API returned status {response.status_code} for query '{query}'")
+                
+        except Exception as e:
+            self.log_thought(f"Error searching bills on Congress.gov: {e}")
+            
+        return []
+    
+    def _get_sponsor_name(self, sponsors: List[Dict[str, Any]]) -> str:
+        """Extract sponsor name from sponsors list."""
+        if not sponsors:
+            return ""
+        # Get the first sponsor
+        sponsor = sponsors[0] if isinstance(sponsors, list) else {}
+        first_name = sponsor.get("firstName", "")
+        last_name = sponsor.get("lastName", "")
+        middle_name = sponsor.get("middleName", "")
+        name_parts = [first_name, middle_name, last_name]
+        return " ".join(part for part in name_parts if part).strip()
+    
+    def _extract_keywords_from_bill(self, bill: Dict[str, Any]) -> List[str]:
+        """Extract relevant keywords from bill data."""
+        keywords = []
+        # Add bill type and number
+        bill_type = bill.get("type", "")
+        bill_number = bill.get("number", "")
+        if bill_type and bill_number:
+            keywords.append(f"{bill_type.upper()} {bill_number}")
+        
+        # Add policy area if available
+        policy_area = bill.get("policyArea", "")
+        if policy_area:
+            keywords.append(policy_area.lower().replace(" ", "_"))
+        
+        # Add subjects if available
+        subjects = bill.get("subjects", [])
+        if isinstance(subjects, list):
+            for subject in subjects:
+                if isinstance(subject, dict):
+                    subject_name = subject.get("name", "")
+                    if subject_name:
+                        keywords.append(subject_name.lower().replace(" ", "_"))
+                elif isinstance(subject, str):
+                    keywords.append(subject.lower().replace(" ", "_"))
+        
+        # Add BNPL-related terms if present in title
+        title = bill.get("title", "").lower()
+        bnpl_terms = ["buy now pay later", "bnpl", "installment loan", "point of sale", "pos lending"]
+        for term in bnpl_terms:
+            if term in title:
+                keywords.append(term.replace(" ", "_"))
+                
+        return list(set(keywords))  # Remove duplicates
+    def execute_task(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute legislative monitoring tasks."""
+        task_type = task_data.get("type", "unknown")
+        
+        self.log_thought(f"Legislative Monitor agent received task: {task_type}")
+        
+        if task_type == "monitor_legislation":
+            return self._monitor_legislation(task_data)
+        elif task_type == "track_bill":
+            return self._track_bill(task_data)
+        elif task_type == "analyze_amendments":
+            return self._analyze_amendments(task_data)
+        else:
+            return {
+                "status": "error",
+                "message": f"Unknown task type: {task_type}",
+                "agent_id": self.agent_id
+            }
+            
+    def _monitor_legislation(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Monitor legislative activity for assigned jurisdictions and products."""
+        jurisdiction = task_data.get("jurisdiction", "US Federal")
+        product = task_data.get("product", "Buy Now, Pay Later")
+        lookback_hours = task_data.get("lookback_hours", 24)
+        
+        self.log_thought(f"Monitoring legislation for {product} in {jurisdiction} (last {lookback_hours}h)")
+        
+        # CRITICAL INSTRUCTION - DEDUPLICATION: Check if we've recently monitored this jurisdiction/product
+        lookup_key = f"leg_monitor:{jurisdiction}:{product}:{lookback_hours}"
+        recent_monitoring = self.check_redis_deduplication(lookup_key)
+        if recent_monitoring:
+            self.log_thought(f"Recent legislative monitoring found for {lookup_key}, checking for updates")
+            # Check if there's been significant change since last monitoring
+            last_run = recent_monitoring.get("completed_at")
+            if last_run:
+                try:
+                    last_run_dt = datetime.fromisoformat(last_run.replace('Z', '+00:00'))
+                    hours_since = (datetime.now(timezone.utc) - last_run_dt).total_seconds() / 3600
+                    
+                    if hours_since < 1:  # Less than 1 hour since last check
+                        self.log_thought(f"Recent check was {hours_since:.1f}h ago, returning cached result")
+                        return {
+                            "status": "cached",
+                            "agent_id": self.agent_id,
+                            "jurisdiction": jurisdiction,
+                            "product": product,
+                            "data_source": "cache",
+                            "cached_result": recent_monitoring,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                except Exception as e:
+                    self.log_thought(f"Error parsing timestamp: {e}")
+        
+        # In a real implementation, this would call legislative APIs (Congress.gov, state legislature APIs)
+        # For now, we'll simulate the monitoring process
+        
+        # Simulate fetching legislative data
+        legislative_items = self._fetch_legislative_data(jurisdiction, product, lookback_hours)
+        
+        # Process and analyze the legislative items
+        analyzed_items = self._analyze_legislative_items(legislative_items, product)
+        
+        # Store results in graph database for future reference
+        self._store_legislative_results(jurisdiction, product, analyzed_items)
+        
+        # Store monitoring result in Redis for deduplication
+        monitoring_result = {
+            "jurisdiction": jurisdiction,
+            "product": product,
+            "lookback_hours": lookback_hours,
+            "items_found": len(legislative_items),
+            "relevant_items": len(analyzed_items),
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "summary": self._generate_legislative_summary(analyzed_items)
+        }
+        
+        self.store_redis_deduplication(lookup_key, monitoring_result, expire_seconds=3600)  # 1 hour
+        
+        return {
+            "status": "success",
+            "agent_id": self.agent_id,
+            "jurisdiction": jurisdiction,
+            "product": product,
+            "lookback_hours": lookback_hours,
+            "legislative_items_found": len(legislative_items),
+            "relevant_items": len(analyzed_items),
+            "analyzed_items": analyzed_items[:5],  # Return first 5 for brevity
+            "summary": monitoring_result["summary"],
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    def _fetch_legislative_data(self, jurisdiction: str, product: str, lookback_hours: int) -> List[Dict[str, Any]]:
+        """Fetch legislative data from APIs (simulated)."""
+        self.log_thought(f"Fetching legislative data for {jurisdiction} - {product}")
+        
+        # For US Federal, try to use Congress.gov API
+        if jurisdiction == "US Federal":
+            try:
+                # Try to get the specific bill H.R. 6891
+                bill = self._get_congress_gov_bill("HR", 6891, 119)
+                if bill:
+                    self.log_thought(f"Successfully fetched H.R. 6891 from Congress.gov")
+                    return [bill]
+                else:
+                    # If the specific bill is not found, search for BNPL bills
+                    self.log_thought(f"H.R. 6891 not found, searching for BNPL bills in Congress.gov")
+                    bills = self._search_congress_gov_bills("BNPL", 119)
+                    if bills:
+                        return bills
+                    else:
+                        self.log_thought(f"No BNPL bills found via Congress.gov API, falling back to mock data")
+            except Exception as e:
+                self.log_thought(f"Error fetching from Congress.gov API: {e}. Falling back to mock data.")
+        
+        # For simulation, return mock data based on jurisdiction (fallback)
+        mock_items = []
+        
+        if jurisdiction == "US Federal":
+            mock_items = [
+                {
+                    "bill_id": "HR-1234-2026",
+                    "title": "Consumer Credit Protection Modernization Act",
+                    "sponsor": "Rep. Johnson (D-CA)",
+                    "introduced_date": "2026-06-08",
+                    "latest_action": "Referred to Committee on Financial Services",
+                    "url": "https://congress.gov/bill/119th-congress/house-bill/1234",
+                    "keywords": ["BNPL", "point of sale lending", "installment loans"],
+                    "relevance_score": 0.9
+                },
+                {
+                    "bill_id": "S-567-2026",
+                    "title": "Fair Lending Transparency Act",
+                    "sponsor": "Sen. Smith (D-NY)",
+                    "introduced_date": "2026-06-05",
+                    "latest_action": "Senate Committee on Banking, Housing, and Urban Affairs",
+                    "url": "https://congress.gov/bill/119th-congress/senate-bill/567",
+                    "keywords": ["disclosure requirements", "alternative lending"],
+                    "relevance_score": 0.7
+                }
+            ]
+        elif jurisdiction == "California":
+            mock_items = [
+                {
+                    "bill_id": "AB-2345",
+                    "title": "California Consumer Financial Protection Law",
+                    "sponsor": "Asm. Garcia (D-LA)",
+                    "introduced_date": "2026-06-07",
+                    "latest_action": "Assembly Committee on Banking and Finance",
+                    "url": "https://leginfo.legislature.ca.gov/faces/billTextClient.xhtml?bill_id=202520260AB2345",
+                    "keywords": ["BNPL", "financial technology", "consumer loans"],
+                    "relevance_score": 0.85
+                }
+            ]
+        
+        # Filter by relevance score (simulate relevance filtering)
+        relevant_items = [item for item in mock_items if item.get("relevance_score", 0) >= 0.6]
+        
+        self.log_thought(f"Found {len(mock_items)} legislative items, {len(relevant_items)} relevant for {product}")
+        return relevant_items
+    def _analyze_legislative_items(self, items: List[Dict[str, Any]], product: str) -> List[Dict[str, Any]]:
+        """Analyze legislative items for potential impact on Affirm products."""
+        self.log_thought(f"Analyzing {len(items)} legislative items for {product} impact")
+        
+        analyzed = []
+        for item in items:
+            # In a real implementation, this would use LLM to analyze the bill text
+            # For now, we'll do rule-based analysis
+            
+            analysis = {
+                "bill_id": item.get("bill_id"),
+                "title": item.get("title"),
+                "jurisdiction": item.get("jurisdiction", "US Federal"),  # Would be set from context
+                "product": product,
+                "relevance_score": item.get("relevance_score", 0.5),
+                "potential_impact": self._assess_potential_impact(item, product),
+                "key_concerns": self._identify_key_concerns(item, product),
+                "recommended_action": self._recommend_action(item, product),
+                "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
+                "analyst_agent": self.agent_id
+            }
+            
+            analyzed.append(analysis)
+            
+        # Sort by relevance score and potential impact
+        analyzed.sort(key=lambda x: (x["relevance_score"], x["potential_impact"]), reverse=True)
+        return analyzed
+        
+    def _assess_potential_impact(self, item: Dict[str, Any], product: str) -> str:
+        """Assess potential impact of legislation on product."""
+        title = item.get("title", "").lower()
+        keywords = [k.lower() for k in item.get("keywords", [])]
+        
+        # High impact indicators
+        high_impact_terms = ["ban", "prohibit", "strict limitation", "interest rate cap", "fee restriction"]
+        medium_impact_terms = ["disclosure", "transparency", "reporting", "licensing"]
+        low_impact_terms = ["study", "review", "committee", "hearing"]
+        
+        text_to_check = f"{title} {' '.join(keywords)}"
+        
+        if any(term in text_to_check for term in high_impact_terms):
+            return "high"
+        elif any(term in text_to_check for term in medium_impact_terms):
+            return "medium"
+        elif any(term in text_to_check for term in low_impact_terms):
+            return "low"
+        else:
+            return "minimal"
+            
+    def _identify_key_concerns(self, item: Dict[str, Any], product: str) -> List[str]:
+        """Identify key concerns from legislation for Affirm."""
+        concerns = []
+        title = item.get("title", "").lower()
+        keywords = [k.lower() for k in item.get("keywords", [])]
+        
+        text_to_check = f"{title} {' '.join(keywords)}"
+        
+        # Product-specific concerns
+        if "bnpl" in text_to_check or "point of sale" in text_to_check or "installment loan" in text_to_check:
+            if "apr" in text_to_check or "interest" in text_to_check:
+                concerns.append("Potential APR/interest rate restrictions")
+            if "fee" in text_to_check:
+                concerns.append("Potential fee limitations or bans")
+            if "disclosure" in text_to_check:
+                concerns += ["Enhanced disclosure requirements", "Potential changes to T&C presentation"]
+            if "licens" in text_to_check:
+                concerns.append("Potential new licensing requirements")
+                
+        # General financial concerns
+        if "consumer protection" in text_to_check:
+            concerns.append("Increased consumer protection scrutiny")
+        if "data privacy" in text_to_check or "privacy" in text_to_check:
+            concerns.append("Potential data privacy implications")
+            
+        return list(set(concerns))  # Remove duplicates
+        
+    def _recommend_action(self, item: Dict[str, Any], product: str) -> str:
+        """Recommend action based on legislative analysis."""
+        impact = self._assess_potential_impact(item, product)
+        concerns = self._identify_key_concerns(item, product)
+        
+        if impact == "high" or len(concerns) > 2:
+            return "Immediate review by legal and policy teams"
+        elif impact == "medium":
+            schedule_review = "Schedule review within 1 week"
+            if concerns:
+                return f"{schedule_review}; monitor for amendments"
+            return schedule_review
+        elif impact == "low":
+            return "Monitor for changes; low immediate concern"
+        else:
+            return "Continue routine monitoring"
+            
+    def _store_legislative_results(self, jurisdiction: str, product: str, 
+                                 analyzed_items: List[Dict[str, Any]]) -> bool:
+        """Store legislative monitoring results in Neo4j graph."""
+        if not self.neo4j_driver:
+            self.logger.warning("Neo4j driver not available for storing results")
+            return False
+            
+        try:
+            with neo4j_session() as session:
+                # Create or update legislative monitoring record
+                query = """
+                MERGE (l:LegislativeMonitoring {
+                    jurisdiction: $jurisdiction,
+                    product: $product,
+                    monitoring_period: $period
+                })
+                SET l.items_analyzed = $items_count,
+                    l.relevant_items = $relevant_count,
+                    l.last_updated = $timestamp,
+                    l.analysis_data = $analysis_data
+                RETURN l.id as record_id
+                """
+                result = session.run(query, 
+                                   jurisdiction=jurisdiction,
+                                   product=product,
+                                   monitoring_period=f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')} (24h)",
+                                   items_count=len(self._fetch_legislative_data(jurisdiction, product, 24)),  # This would be cached in reality
+                                   relevant_count=len(analyzed_items),
+                                   timestamp=datetime.now(timezone.utc).isoformat(),
+                                   analysis_data=json.dumps(analyzed_items))
+                record = result.single()
+                
+                if record:
+                    self.logger.debug(f"Stored legislative monitoring results for {jurisdiction}:{product}")
+                    return True
+                return False
+        except Exception as e:
+            self.logger.error(f"Error storing legislative results: {e}")
+            return False
+            
+    def _generate_legislative_summary(self, analyzed_items: List[Dict[str, Any]]) -> str:
+        """Generate a human-readable summary of legislative monitoring results."""
+        if not analyzed_items:
+            return "No relevant legislative activity detected"
+            
+        high_count = sum(1 for item in analyzed_items if item.get("potential_impact") == "high")
+        medium_count = sum(1 for item in analyzed_items if item.get("potential_impact") == "medium")
+        low_count = sum(1 for item in analyzed_items if item.get("potential_impact") == "low")
+        
+        summary_parts = []
+        if high_count > 0:
+            summary_parts.append(f"{high_count} high-impact items")
+        if medium_count > 0:
+            summary_parts.append(f"{medium_count} medium-impact items")
+        if low_count > 0:
+            summary_parts.append(f"{low_count} low-impact items")
+            
+        return f"Legislative monitoring found: {', '.join(summary_parts)}"
+        
+    def _track_bill(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Track a specific bill through the legislative process."""
+        bill_id = task_data.get("bill_id", "")
+        jurisdiction = task_data.get("jurisdiction", "US Federal")
+        
+        self.log_thought(f"Tracking bill {bill_id} in {jurisdiction}")
+        
+        # In reality, this would set up continuous tracking of a specific bill
+        # For simulation, return tracking setup confirmation
+        
+        return {
+            "status": "success",
+            "agent_id": self.agent_id,
+            "bill_id": bill_id,
+            "jurisdiction": jurisdiction,
+            "tracking_established": True,
+            "tracking_frequency": "hourly",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    def _analyze_amendments(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze amendments to existing legislation."""
+        bill_id = task_data.get("bill_id", "")
+        amendment_text = task_data.get("amendment_text", "")
+        
+        self.log_thought(f"Analyzing amendments to bill {bill_id}")
+        
+        # In reality, this would analyze amendment text for impact
+        # For simulation, return basic analysis
+        
+        return {
+            "status": "success",
+            "agent_id": self.agent_id,
+            "bill_id": bill_id,
+            "amendment_analyzed": True,
+            "impact_assessment": "Analysis would be performed in production",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    def get_capabilities(self) -> List[str]:
+        """Return list of capabilities this agent provides."""
+        return [
+            "legislative_monitoring",
+            "bill_tracking",
+            "amendment_analysis",
+            "keyword_based_filtering",
+            "impact_assessment",
+            "deduplication_enforcement",
+            "graph_database_storage"
+        ]
+
+
+# Example usage
+if __name__ == "__main__":
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    
+    agent = LegislativeMonitorAgent()
+    
+    # Test legislative monitoring
+    result = agent.execute_task({
+        "type": "monitor_legislation",
+        "jurisdiction": "US Federal",
+        "product": "Buy Now, Pay Later",
+        "lookback_hours": 24
+    })
+    
+    print("Legislative monitoring result:")
+    print(f"Status: {result['status']}")
+    print(f"Jurisdiction: {result.get('jurisdiction')}")
+    print(f"Product: {result.get('product')}")
+    print(f"Items found: {result.get('legislative_items_found')}")
+    print(f"Relevant items: {result.get('relevant_items')}")
+    print(f"Summary: {result.get('summary')}")
