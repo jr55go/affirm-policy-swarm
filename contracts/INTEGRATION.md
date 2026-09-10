@@ -20,7 +20,7 @@ The dashboard rejects non-production mode, unsupported schema versions, inconsis
 4. Optionally set `SWARM_CODE_VERSION` to the deployed release or commit.
 5. Verify `<origin>/api/ingest/v1/health` with the bearer token.
 6. Launch `python3 run_live_swarm.py` from the repository root.
-7. Confirm `reports/live_runs/<run_id>/dashboard_run_bundle.json` exists.
+7. Confirm `reports/live_runs/<run_id>/dashboard_bundle.json` exists.
 8. Open the authenticated dashboard and select the emitted `runId`.
 
 ## Lifecycle contract
