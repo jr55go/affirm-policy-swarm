@@ -12,13 +12,12 @@ if [[ -f .env ]]; then
 fi
 
 dashboard_origin="${1:-${DASHBOARD_ORIGIN:-}}"
-if [[ -z "${DASHBOARD_INGEST_URL:-}" ]]; then
-  if [[ -z "$dashboard_origin" ]]; then
-    echo "Usage: $0 https://YOUR-PUBLISHED-DASHBOARD-DOMAIN" >&2
-    echo "Alternatively set DASHBOARD_INGEST_URL in .env." >&2
-    exit 1
-  fi
+if [[ -n "$dashboard_origin" ]]; then
   export DASHBOARD_INGEST_URL="${dashboard_origin%/}/api/ingest/v1/runs"
+elif [[ -z "${DASHBOARD_INGEST_URL:-}" ]]; then
+  echo "Usage: $0 https://YOUR-PUBLISHED-DASHBOARD-DOMAIN" >&2
+  echo "Alternatively set DASHBOARD_INGEST_URL in .env." >&2
+  exit 1
 fi
 
 if [[ -z "${DASHBOARD_INGEST_TOKEN:-}" ]]; then

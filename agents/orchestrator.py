@@ -348,8 +348,9 @@ class PolicyOrchestratorAgent:
             state_out = state_monitor.execute_task({})
             state_recs = state_out.get("records", [])
             
-            # --- LEGISCAN INJECTION (Powered by LEXISNEXIS_API_KEY) ---
-            ls_key = os.getenv("LEXISNEXIS_API_KEY")
+            # --- LEGISCAN INJECTION ---
+            # LEGISCAN_API_KEY is canonical; retain the historical alias for existing DGX environments.
+            ls_key = os.getenv("LEGISCAN_API_KEY") or os.getenv("LEXISNEXIS_API_KEY")
             if ls_key:
                 import json
                 from infrastructure.connectors.legiscan_connector import LegiScanConnector

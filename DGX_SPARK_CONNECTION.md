@@ -36,24 +36,28 @@ cd /path/to/affirm-policy-swarm
 git status
 ```
 
-If the working tree is clean and tracks `jr55go/affirm-policy-swarm`, fast-forward it:
+If the working tree is clean and the local branch has no DGX-only commits, fast-forward it:
 
 ```bash
 git fetch origin
-git pull --ff-only origin main
+git merge --ff-only origin/main
 ```
 
-If the DGX has uncommitted local changes, commit them to a local safety branch before merging:
+If the DGX has uncommitted changes or local commits, create a safety branch and review what will be committed before merging:
 
 ```bash
-git switch -c dgx-safety-before-dashboard
-git add -A
+git switch -c "dgx-safety-before-dashboard-$(date +%Y%m%d-%H%M%S)"
+git status --short
+git add -u
+# Add only intended untracked source files by explicit path; never add .env.
+# git add path/to/intended-new-source-file
+git diff --cached
 git commit -m "Checkpoint DGX swarm before dashboard integration"
 git fetch origin
 git merge origin/main
 ```
 
-Resolve any merge conflicts in the active production files rather than discarding the DGX-specific work. The required integration files are `contracts/swarm_run_bundle.schema.json`, `infrastructure/dashboard_emitter.py`, the updated `agents/orchestrator.py`, and `run_live_swarm.py`.
+Resolve merge conflicts rather than discarding DGX-specific work. The integration spans commits `c81562a` and `a6e2090`, including multiple production agents, the emitter, contract, launcher, tests, and helper scripts. Merge the commits as a unit; do not copy only four named files. In particular, preserve `scripts/run_swarm_with_dashboard.sh` and `scripts/verify_dashboard_connection.py`, because later commands use them.
 
 ## 3. Configure the DGX environment
 
@@ -74,7 +78,8 @@ REGULATIONS_GOV_API_KEY=YOUR_EXISTING_KEY
 DASHBOARD_INGEST_URL=https://YOUR-PUBLISHED-DASHBOARD-DOMAIN/api/ingest/v1/runs
 DASHBOARD_INGEST_TOKEN=THE_EXACT_SECRET_SET_IN_DASHBOARD_SETTINGS
 DASHBOARD_INGEST_TIMEOUT_SECONDS=30
-SWARM_CODE_VERSION=YOUR_RELEASE_OR_GIT_COMMIT
+# Leave blank to let the wrapper record `git rev-parse HEAD`, or set an actual release/commit.
+SWARM_CODE_VERSION=
 ```
 
 The only required source credential enforced by the launcher is `CONGRESS_GOV_API_KEY`. Missing optional source credentials produce failed or skipped source states; they do not produce sample data.
@@ -96,7 +101,7 @@ Confirm Ollama is available:
 curl -fsS http://localhost:11434/api/tags >/dev/null && echo "Ollama ready"
 ```
 
-Use the Python environment that already launches the local swarm. The dashboard integration itself adds no third-party Python dependency; it uses the standard library. If this is a fresh environment, install the repository's existing runtime packages before continuing.
+Use the Python environment that already launches the local swarm. The new emitter and health verifier use the Python standard library, but the full existing swarm does not: `run_live_swarm.py` imports `python-dotenv`, and active agents use packages such as `requests`, `feedparser`, `beautifulsoup4`, `pandas`, and the Neo4j driver. This repository currently has no authoritative lockfile or requirements manifest, so these directions are for the already-working DGX environment, not a fresh Python bootstrap.
 
 ## 5. Verify the dashboard connection without sending data
 
@@ -148,6 +153,8 @@ After correcting connectivity or the token, resubmit the saved bundle with:
 
 ```bash
 set -a; source .env; set +a
+latest_run="$(find reports/live_runs -mindepth 1 -maxdepth 1 -type d -name 'run_*' | sort | tail -1)"
+test -n "$latest_run" && test -f "$latest_run/dashboard_bundle.json"
 curl --fail-with-body \
   -H "Authorization: Bearer $DASHBOARD_INGEST_TOKEN" \
   -H "Content-Type: application/json" \
