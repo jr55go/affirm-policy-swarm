@@ -37,39 +37,19 @@ class JudicialMonitorAgent(BaseAgent):
             }
             
     def _judicial_monitoring(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Monitor judicial activity for assigned jurisdictions and products."""
+        """Return an honest skipped state until a production court-data connector is configured."""
         jurisdiction = task_data.get("jurisdiction", "US Federal")
         product = task_data.get("product", "Buy Now, Pay Later")
         lookback_hours = task_data.get("lookback_hours", 24)
-        
-        self.log_thought(f"Monitoring judicial activity for {product} in {jurisdiction} (last {lookback_hours}h)")
-        
-        # In a real implementation, this would query court databases, PACER, etc.
-        # For now, we'll simulate finding a relevant case.
-        
-        # Simulate judicial item
-        judicial_item = {
-            "case_id": f"CV-{uuid.uuid4().hex[:8]}",
-            "title": f"Consumer Financial Protection Bureau v. {product} Company",
-            "court": "U.S. District Court for the District of Columbia",
-            "filed_date": datetime.now(timezone.utc).isoformat(),
-            "judge": "Judge Smith",
-            "claims": ["Violation of Consumer Financial Protection Act", "Unfair and deceptive practices"],
-            "status": "Pending",
-            "url": f"https://www.courts.gov/case/{uuid.uuid4().hex[:8]}",
-            "relevance_score": 0.85
-        }
-        
-        # Store result in graph database
-        self._store_judicial_result(judicial_item, jurisdiction, product)
-        
+        self.log_thought(f"Skipping judicial monitoring for {product} in {jurisdiction}: no production connector")
         return {
-            "status": "success",
+            "status": "skipped",
             "agent_id": self.agent_id,
             "jurisdiction": jurisdiction,
             "product": product,
             "lookback_hours": lookback_hours,
-            "judicial_item": judicial_item,
+            "records": [],
+            "reason": "No production court-data connector is configured.",
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         

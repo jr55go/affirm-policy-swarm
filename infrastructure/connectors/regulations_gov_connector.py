@@ -35,14 +35,12 @@ class RegulationsGovConnector(BaseSourceConnector):
         super().__init__(config)
         try:
             # Try dict access first
-            self.api_key = config.get("api_key", "DEMO_KEY")
+            self.api_key = config.get("api_key")
         except (AttributeError, TypeError):
             try:
-                # Fallback to object attribute access
-                self.api_key = getattr(config, "api_key", "DEMO_KEY")
+                self.api_key = getattr(config, "api_key", None)
             except (AttributeError, TypeError):
-                # Ultimate fallback
-                self.api_key = "DEMO_KEY"
+                self.api_key = None
         
         try:
             self.timeout = config.get("timeout", 30)
@@ -486,4 +484,3 @@ class RegulationsGovConnector(BaseSourceConnector):
         if not hasattr(self, '_checkpoint_manager'):
             self._checkpoint_manager = CheckpointManager()
         return self._checkpoint_manager
-

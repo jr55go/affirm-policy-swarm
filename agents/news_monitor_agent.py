@@ -4,35 +4,6 @@ import xml.etree.ElementTree as ET
 from infrastructure.source_registry import SourceRegistry
 
 class NewsMonitorAgent:
-
-    def _perform_live_search_fallback(self, query: str, max_results: int = 3):
-        """Tier 2 Fallback: Search web when primary feeds fail or return empty."""
-        print(f"[{self.agent_id}]  Tier 2: Searching web for '{query}'...")
-        fallback_records = []
-        try:
-            import urllib.parse, urllib.request
-            encoded_query = urllib.parse.quote(query)
-            url = f"https://html.duckduckgo.com/html/?q={encoded_query}"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64)'})
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                html = resp.read().decode('utf-8', errors='ignore')
-            
-            titles = re.findall(r'<a class="result__a"[^>]*>(.*?)</a>', html)
-            snippets = re.findall(r'<a class="result__snippet"[^>]*>(.*?)</a>', html)
-            
-            for i in range(min(len(titles), max_results)):
-                clean_title = re.sub(r'<[^>]+>', '', titles[i]).strip()
-                clean_snippet = re.sub(r'<[^>]+>', '', snippets[i]).strip() if i < len(snippets) else clean_title
-                fallback_records.append({
-                    "title": clean_title,
-                    "description": clean_snippet,
-                    "link": f"search_fallback_{i}"
-                })
-            print(f"[{self.agent_id}]  Tier 2 Recovered {len(fallback_records)} organic search items.")
-        except Exception as e:
-            print(f"[{self.agent_id}]  Tier 2 Search failed ({e}). Escalating to Tier 3.")
-        return fallback_records
-
     def __init__(self, agent_id="news-monitor"):
         self.agent_id = agent_id
         self.name = "News Monitor Agent"
@@ -82,8 +53,7 @@ class NewsMonitorAgent:
                             "link": link
                         })
                     if not items:
-                        print(f"[{self.agent_id}] Tier 1 empty for {source_name}. Escalating to Tier 2...")
-                        items = self._perform_live_search_fallback(f"{source_name.replace('_', ' ')} Buy Now Pay Later regulation")
+                        print(f"[{self.agent_id}] Tier 1 empty for {source_name}. No production fallback will be used.")
 
                 if items:
                     for item in items[:3]:
@@ -92,6 +62,7 @@ class NewsMonitorAgent:
                             "jurisdiction": "US",
                             "title": item.get("title", "Financial News Update"),
                             "text_context": item.get("description", ""),
+                            "url": item.get("link", ""),
                         }
                         records.append(record)
                     registry.update_source_health(source_name, success=True)
@@ -100,19 +71,8 @@ class NewsMonitorAgent:
                     registry.update_source_health(source_name, success=False, error="Tier 1 & 2 yield 0 records")
 
             except Exception as e:
-                print(f"[{self.agent_id}] Tier 1 Fetch Error for {source_name}: {e}. Escalating to Tier 2...")
-                fallback_items = self._perform_live_search_fallback(f"{source_name.replace('_', ' ')} Buy Now Pay Later regulation")
-                if fallback_items:
-                    for item in fallback_items[:3]:
-                        records.append({
-                            "source": source_name.replace('_', ' ').title(),
-                            "jurisdiction": "US",
-                            "title": item.get("title", "Financial News Update"),
-                            "text_context": item.get("description", ""),
-                        })
-                    registry.update_source_health(source_name, success=True)
-                else:
-                    registry.update_source_health(source_name, success=False, error=str(e))
+                print(f"[{self.agent_id}] Tier 1 Fetch Error for {source_name}: {e}. No production fallback will be used.")
+                registry.update_source_health(source_name, success=False, error=str(e))
                 continue
 
         return {"agent_id": self.agent_id, "records": records, "status": "COMPLETED"}

@@ -27,7 +27,7 @@ class EntityResolutionAgent:
 
     def _extract_entities(self, text):
         if not text or not text.strip():
-            return {"organizations": [], "policymakers": [], "themes": []}
+            return {"organizations": [], "policymakers": [], "themes": []}, False
 
         prompt = f"""
 Extract organizations, policymakers, and themes from the following text.
@@ -44,22 +44,22 @@ required JSON: {{"organizations": ["CFPB", "Affirm"], "policymakers": [], "theme
 """
         llm_response = self._call_ollama(prompt)
         if llm_response is None:
-            return self._fallback_entities(text)
+            return self._fallback_entities(text), True
 
         try:
             match = re.search(r'\{.*\}', llm_response, re.DOTALL)
             json_str = match.group(0) if match else llm_response
             entities = json_module.loads(json_str)
             if not isinstance(entities, dict):
-                return self._fallback_entities(text)
+                return self._fallback_entities(text), True
             
             entities.setdefault("organizations", [])
             entities.setdefault("policymakers", [])
             entities.setdefault("themes", [])
-            return entities
+            return entities, False
         except Exception as e:
             print(f"[{self.agent_id}] Failed to parse entities: {e}. Using fallback.")
-            return self._fallback_entities(text)
+            return self._fallback_entities(text), True
 
     def _fallback_entities(self, text):
         text_lower = text.lower()
@@ -73,7 +73,8 @@ required JSON: {{"organizations": ["CFPB", "Affirm"], "policymakers": [], "theme
         print(f"[{self.agent_id}] Extracting entities from {len(findings)} findings...")
         for finding in findings:
             text = finding.get("text_context") or finding.get("snippet") or finding.get("summary") or finding.get("title") or ""
-            entities = self._extract_entities(text)
+            entities, used_fallback = self._extract_entities(text)
             finding["entities"] = entities
+            finding["entity_fallback"] = used_fallback
             enriched_findings.append(finding)
         return {"findings": enriched_findings, "status": "COMPLETED"}

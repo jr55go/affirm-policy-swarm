@@ -108,18 +108,6 @@ class SourceRegistry:
                 "url": "https://www.banking.senate.gov/",
                 "cadence": "daily",
                 "enabled": True, "rate_limit": "polite", "last_success": None, "last_error": None,
-                # Add fallback configuration for robustness
-                "fallback_enabled": False,  # DISABLED MOCK DATA
-                "fallback_data": [
-                    {
-                        "title": "Sample Senate Banking Committee Statement (Offline Fallback)",
-                        "text_context": "This is fallback data generated when the Senate Banking Committee RSS feed is unavailable. Represents typical committee activity regarding financial regulation oversight.",
-                        "source": "Senate Banking Committee [OFFLINE FALLBACK]",
-                        "url": "https://www.banking.senate.gov/ (Cached)",
-                        "date": datetime.datetime.now().strftime("%Y-%m-%d"),
-                        "impact_score": "medium"
-                    }
-                ],
                 "error_tolerance": "log_and_continue"
             },
             "fintech_press": {
@@ -441,8 +429,5 @@ class SourceRegistry:
         return [name for name, meta in self._catalog.items() if meta["enabled"] and meta["source_type"] == source_type]
 
     def get_fallback_data(self, source_name: str):
-        """Get fallback data for a source when it's unavailable"""
-        source_config = self._catalog.get(source_name, {})
-        if source_config.get("fallback_enabled") and "fallback_data" in source_config:
-            return source_config["fallback_data"]
+        """Production policy forbids substituting sample records for unavailable sources."""
         return []

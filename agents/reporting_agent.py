@@ -26,6 +26,24 @@ class ReportingAgent:
 
         today_str = datetime.now().strftime('%B %d, %Y')
 
+        if not findings:
+            report_path = os.path.join(report_dir, "report.md") if report_dir else "report.md"
+            if report_dir:
+                os.makedirs(report_dir, exist_ok=True)
+            memo_content = (
+                "# Regulatory & Public Affairs Memorandum\n\n"
+                f"**DATE:** {today_str}\n\n"
+                "No validated production findings were produced in this run. "
+                "No policy conclusions or actions are asserted.\n"
+            )
+            with open(report_path, "w", encoding="utf-8") as f:
+                f.write(memo_content)
+            return {"report_path": report_path, "generation_status": "completed", "actionable_count": 0, "rejected_count": 0}
+
+        if synthesis.get("generation_status") == "failed":
+            logging.error(f"[{self.agent_id}] Upstream synthesis failed; production report will not be created.")
+            return {"report_path": None, "generation_status": "failed", "error": synthesis.get("error", "Upstream synthesis failed")}
+
         # 1. Prepare raw context for the LLM
         context_block = f"UPSTREAM SYNTHESIS DATA:\n{json.dumps(synthesis, indent=2)}\n\nRAW ACTIONABLE FINDINGS:\n"
         for i, f in enumerate(actionable_findings):
@@ -34,7 +52,7 @@ class ReportingAgent:
             context_block += f"Title: {f.get('title')}\nURL: {url_str}\nDate: {date_str}\nSource: {f.get('source')}\nAnalysis: {f.get('inferred_market_impact', f.get('snippet'))}\n\n"
 
         if not actionable_findings:
-            context_block += "\nNO DIRECT HITS TODAY. Synthesize baseline horizon risks, macro-economic proxies, and pending rules."
+            context_block += "\nNO VALIDATED ACTIONABLE FINDINGS. Do not assert baseline, horizon, or adjacent risks."
 
         # 2. Frontier AI Prompt - Enforcing the 9-Section Matrix
         system_prompt = f"""You are the Chief of Staff and Lead Policy Strategist for Affirm.
@@ -103,8 +121,8 @@ RAW DATA TO SYNTHESIZE:
             resp.raise_for_status()
             ai_report_body = resp.json().get("response", "").strip()
         except Exception as e:
-            logging.error(f"[{self.agent_id}] LLM synthesis failed, falling back to basic layout: {e}")
-            ai_report_body = "> *Frontier AI Synthesis Engine offline. Displaying raw data below.*"
+            logging.error(f"[{self.agent_id}] LLM synthesis failed; production report will not be created: {e}")
+            return {"report_path": None, "generation_status": "failed", "error": str(e)}
 
         # 3. Build the Evidence & Provenance Tables manually so they are perfectly structured
         detail_lines = []
@@ -156,4 +174,9 @@ RAW DATA TO SYNTHESIZE:
             f.write(memo_content)
             
         logging.info(f"[{self.agent_id}] ✅ Report successfully generated at: {report_path}")
-        return {"report_path": report_path}
+        return {
+            "report_path": report_path,
+            "generation_status": "completed",
+            "actionable_count": len(actionable_findings),
+            "rejected_count": len(rejected_findings),
+        }

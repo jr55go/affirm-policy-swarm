@@ -17,7 +17,7 @@ if not os.getenv("CONGRESS_GOV_API_KEY"):
 from agents.orchestrator import PolicyOrchestratorAgent
 
 cg_key = os.getenv("CONGRESS_GOV_API_KEY")
-ls_key = os.getenv("LEGISCAN_API_KEY")
+ls_key = os.getenv("LEGISCAN_API_KEY") or os.getenv("LEXISNEXIS_API_KEY")
 
 orch = PolicyOrchestratorAgent()
 result = orch.run_swarm(cg_key, ls_key)

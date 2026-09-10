@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://affirm-policy.local/contracts/swarm-run-bundle-v1.schema.json",
+  "title": "Affirm Policy Swarm Run Bundle",
+  "description": "Canonical production contract emitted by affirm-policy-swarm and ingested by the independent dashboard.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "run", "stages", "sources", "findings", "investigations", "report", "errors"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "run": { "$ref": "#/$defs/run" },
+    "stages": { "type": "array", "items": { "$ref": "#/$defs/stage" } },
+    "sources": { "type": "array", "items": { "$ref": "#/$defs/source" } },
+    "findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
+    "investigations": { "type": "array", "items": { "$ref": "#/$defs/investigation" } },
+    "report": { "oneOf": [{ "$ref": "#/$defs/report" }, { "type": "null" }] },
+    "errors": { "type": "array", "items": { "$ref": "#/$defs/runError" } }
+  },
+  "$defs": {
+    "isoTimestamp": { "type": "string", "format": "date-time" },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "mode", "status", "objective", "startedAt", "codeVersion", "emitterVersion", "updatedAt"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^run_[0-9]{9,}$" },
+        "mode": { "const": "production" },
+        "status": { "enum": ["starting", "running", "partial", "completed", "failed"] },
+        "objective": { "type": "string", "minLength": 1 },
+        "startedAt": { "$ref": "#/$defs/isoTimestamp" },
+        "updatedAt": { "$ref": "#/$defs/isoTimestamp" },
+        "completedAt": { "oneOf": [{ "$ref": "#/$defs/isoTimestamp" }, { "type": "null" }] },
+        "failedAt": { "oneOf": [{ "$ref": "#/$defs/isoTimestamp" }, { "type": "null" }] },
+        "codeVersion": { "type": "string", "minLength": 1 },
+        "emitterVersion": { "const": "1.0.0" }
+      }
+    },
+    "stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "label", "status", "inputCount", "outputCount", "updatedAt"],
+      "properties": {
+        "key": { "enum": ["discovery", "direct_sources", "regulatory_apis", "sentiment", "deduplication", "context_expansion", "impact_analysis", "compression", "entity_resolution", "risk_scoring", "validation", "graph_sync", "synthesis", "reporting"] },
+        "label": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["pending", "running", "completed", "failed", "skipped"] },
+        "startedAt": { "oneOf": [{ "$ref": "#/$defs/isoTimestamp" }, { "type": "null" }] },
+        "completedAt": { "oneOf": [{ "$ref": "#/$defs/isoTimestamp" }, { "type": "null" }] },
+        "updatedAt": { "$ref": "#/$defs/isoTimestamp" },
+        "inputCount": { "type": "integer", "minimum": 0 },
+        "outputCount": { "type": "integer", "minimum": 0 },
+        "error": { "type": ["string", "null"] }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "name", "category", "status", "recordCount", "checkedAt", "usedFallback"],
+      "properties": {
+        "key": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "category": { "enum": ["web", "rss", "sec", "legislative", "regulatory", "judicial", "news", "sentiment", "public_statement", "research"] },
+        "status": { "enum": ["pending", "healthy", "degraded", "failed", "skipped"] },
+        "recordCount": { "type": "integer", "minimum": 0 },
+        "checkedAt": { "$ref": "#/$defs/isoTimestamp" },
+        "usedFallback": { "const": false },
+        "error": { "type": ["string", "null"] }
+      }
+    },
+    "entities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["organizations", "policymakers", "themes"],
+      "properties": {
+        "organizations": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "policymakers": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "themes": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "collector", "contentHash", "isFallback", "isMock", "isSimulated"],
+      "properties": {
+        "kind": { "enum": ["direct", "derived"] },
+        "collector": { "type": "string", "minLength": 1 },
+        "contentHash": { "type": "string", "pattern": "^[a-fA-F0-9]{32,128}$" },
+        "isFallback": { "const": false },
+        "isMock": { "const": false },
+        "isSimulated": { "const": false }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "runId", "title", "sourceName", "sourceType", "observedAt", "jurisdiction", "summary", "context", "impactScore", "policyRiskScore", "validationStatus", "confidence", "explicitSourceFacts", "inferredImpact", "entities", "pipelineStatus", "provenance"],
+      "properties": {
+        "id": { "type": "string", "minLength": 8 },
+        "runId": { "type": "string", "pattern": "^run_[0-9]{9,}$" },
+        "title": { "type": "string", "minLength": 1 },
+        "url": { "type": ["string", "null"], "format": "uri" },
+        "sourceName": { "type": "string", "minLength": 1 },
+        "sourceType": { "type": "string", "minLength": 1 },
+        "sourceRecordId": { "type": ["string", "null"] },
+        "publishedAt": { "oneOf": [{ "$ref": "#/$defs/isoTimestamp" }, { "type": "null" }] },
+        "observedAt": { "$ref": "#/$defs/isoTimestamp" },
+        "jurisdiction": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string" },
+        "context": { "type": "string" },
+        "impactScore": { "enum": ["high", "medium", "low"] },
+        "policyRiskScore": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "validationStatus": { "enum": ["approved", "rejected", "needs_review", "not_required"] },
+        "validationReason": { "type": ["string", "null"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "sentimentScore": { "type": ["number", "null"], "minimum": -1, "maximum": 1 },
+        "explicitSourceFacts": { "type": "array", "items": { "type": "string" } },
+        "inferredImpact": { "type": "string" },
+        "entities": { "$ref": "#/$defs/entities" },
+        "deadlineAt": { "oneOf": [{ "$ref": "#/$defs/isoTimestamp" }, { "type": "null" }] },
+        "pipelineStatus": { "enum": ["collected", "expanded", "analyzed", "compressed", "enriched", "scored", "validated", "rejected"] },
+        "provenance": { "$ref": "#/$defs/provenance" }
+      }
+    },
+    "investigation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "status", "jurisdictions", "themes", "entities", "findingIds", "knowns", "unknowns", "updatedAt"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["active", "monitoring", "closed"] },
+        "jurisdictions": { "type": "array", "items": { "type": "string" } },
+        "themes": { "type": "array", "items": { "type": "string" } },
+        "entities": { "type": "array", "items": { "type": "string" } },
+        "findingIds": { "type": "array", "items": { "type": "string" } },
+        "knowns": { "type": "array", "items": { "type": "string" } },
+        "unknowns": { "type": "array", "items": { "type": "string" } },
+        "scheduledFollowUps": { "type": "array", "items": { "$ref": "#/$defs/isoTimestamp" } },
+        "updatedAt": { "$ref": "#/$defs/isoTimestamp" }
+      }
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runId", "format", "content", "generatedAt", "actionableFindingIds", "rejectedFindingIds"],
+      "properties": {
+        "runId": { "type": "string", "pattern": "^run_[0-9]{9,}$" },
+        "format": { "const": "markdown" },
+        "content": { "type": "string", "minLength": 1 },
+        "generatedAt": { "$ref": "#/$defs/isoTimestamp" },
+        "actionableFindingIds": { "type": "array", "items": { "type": "string" } },
+        "rejectedFindingIds": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "runError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage", "message", "occurredAt", "recoverable"],
+      "properties": {
+        "stage": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 },
+        "occurredAt": { "$ref": "#/$defs/isoTimestamp" },
+        "recoverable": { "type": "boolean" }
+      }
+    }
+  }
+}

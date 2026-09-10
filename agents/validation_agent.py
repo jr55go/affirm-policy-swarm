@@ -37,10 +37,7 @@ class ValidationAgent:
                 return json.loads(response_text[start:end])
             return json.loads(response_text)
         except Exception:
-            text_lower = response_text.lower()
-            if "reject" in text_lower or "hallucin" in text_lower:
-                return {"validation_status": "rejected", "validation_reason": "Failed strict factual verification."}
-            return {"validation_status": "approved", "validation_reason": "Verified against source text."}
+            return None
 
     def execute_task(self, payload):
         findings = payload.get("findings", [])
@@ -74,17 +71,20 @@ Output ONLY valid JSON:
             llm_response = self._call_ollama(prompt)
             
             if llm_response is None:
-                finding["validation_status"] = "approved"
-                finding["validation_reason"] = "Defaulted to approved due to LLM response timeout."
+                finding["validation_status"] = "rejected"
+                finding["validation_reason"] = "Validation unavailable; production policy requires rejection."
+                finding["validation_fallback"] = True
             else:
                 parsed = self._parse_llm_response(llm_response)
                 if parsed and isinstance(parsed, dict):
                     v_status = str(parsed.get("validation_status", "approved")).lower()
                     finding["validation_status"] = "approved" if "approve" in v_status else "rejected"
                     finding["validation_reason"] = parsed.get("validation_reason", "Verified against source context.")
+                    finding["validation_fallback"] = False
                 else:
-                    finding["validation_status"] = "approved"
-                    finding["validation_reason"] = "Parsed fallback approved."
+                    finding["validation_status"] = "rejected"
+                    finding["validation_reason"] = "Unparseable validation response; production policy requires rejection."
+                    finding["validation_fallback"] = True
 
             if finding.get("validation_status") == "rejected":
                 print(f"[{self.agent_id}] ❌ REJECTED (Hallucination/Irrelevance caught): {title}")

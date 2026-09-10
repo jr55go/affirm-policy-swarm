@@ -24,11 +24,13 @@ from infrastructure.graph_db import GraphConnector
 from agents.evidence_triage_agent import EvidenceTriageAgent
 from infrastructure.fingerprint_util import generate_content_fingerprint
 from infrastructure.investigation_memory import InvestigationMemory
+from infrastructure.dashboard_emitter import DashboardRunEmitter, partition_production_records
 
 import json
 import time as pytime
 import logging
 import argparse
+from datetime import datetime
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -87,6 +89,7 @@ def filter_off_topic_records(records: list) -> list:
                 logging.info(f"[Gatekeeper] Llama Rejected (Off-Topic): {title}")
         except Exception as e:
             logging.warning(f"[Gatekeeper] Error on '{title}', defaulting to keep. Error: {e}")
+            r["triage_fallback"] = True
             filtered.append(r)
             
     # Save updated dynamic state
@@ -112,6 +115,28 @@ def deduplicate_records(records: list) -> list:
 
 class PolicyOrchestratorAgent:
     def run_swarm(self, cg_key, ls_key, golden_run=False):
+        if golden_run:
+            raise ValueError("Golden/test runs are not permitted through the production dashboard pipeline.")
+        run_id = f"run_{int(pytime.time())}"
+        report_dir = f"reports/live_runs/{run_id}"
+        os.makedirs(report_dir, exist_ok=True)
+        emitter = DashboardRunEmitter(
+            run_id=run_id,
+            report_dir=report_dir,
+            objective="Affirm regulatory and public-policy intelligence run",
+        )
+        try:
+            return self._run_swarm(cg_key, ls_key, run_id, report_dir, emitter)
+        except Exception as error:
+            logger.exception(f"[{self.__class__.__name__}] Swarm run failed: {error}")
+            emitter.add_error("orchestrator", str(error), recoverable=False)
+            try:
+                emitter.emit("failed")
+            except Exception as emit_error:
+                logger.exception(f"[{self.__class__.__name__}] Failed to emit terminal run state: {emit_error}")
+            raise
+
+    def _run_swarm(self, cg_key, ls_key, run_id, report_dir, emitter):
         planner = PlannerAgent()
         discovery = DiscoveryAgent()
         reader = ReaderAgent()
@@ -119,9 +144,13 @@ class PolicyOrchestratorAgent:
         market_sentiment = MarketSentimentAgent()
         public_statement = PublicStatementMonitorAgent()
         
-        run_id = f"run_{int(pytime.time())}"
-        report_dir = f"reports/live_runs/{run_id}"
-        os.makedirs(report_dir, exist_ok=True)
+        def accept_source(records, key, name, category):
+            safe, rejected = partition_production_records(records if isinstance(records, list) else [])
+            error = f"Rejected {len(rejected)} explicit non-production record(s)." if rejected else None
+            emitter.source(key, name, category, "degraded" if rejected else "healthy", len(safe), error=error)
+            return safe
+
+        emitter.emit("starting")
         
         logger.info(f"[{self.__class__.__name__}] Starting swarm run: {run_id}")
 
@@ -137,6 +166,7 @@ class PolicyOrchestratorAgent:
         recent_brain = []
         
         # 1. STREAM A: WEB DISCOVERY & TRIAGE
+        emitter.stage("discovery", "running")
         for iteration in range(3):
             logger.info(f"--- Starting Autonomous Iteration {iteration} ---")
             queries = planner.generate_plan(notebook_state, recent_brain)
@@ -158,12 +188,15 @@ class PolicyOrchestratorAgent:
             # Keep recent brain from blowing up the context window
             recent_brain = recent_brain[-20:]
             
-            all_records.extend(read_targets)
+            all_records.extend(accept_source(read_targets, f"web_discovery_{iteration}", f"Web discovery iteration {iteration + 1}", "web"))
             logger.info(f"[{self.__class__.__name__}] Iteration {iteration} Complete: Kept {len(read_targets)} high-novelty targets")
             
         
+        emitter.stage("discovery", "completed", output_count=len(all_records))
+
         # 4. STREAM D: GUARANTEED DIRECT SOURCES (RSS Feeds & SEC EDGAR)
         logger.info(f"[{self.__class__.__name__}] Starting Stream D: Guaranteed Direct Ingestion")
+        emitter.stage("direct_sources", "running")
         direct_records = []
         
         # 4a. RSS Feed Agent
@@ -172,10 +205,11 @@ class PolicyOrchestratorAgent:
             rss_agent = RSSFeedAgent()
             rss_out = rss_agent.execute_task({})
             rss_recs = rss_out.get("records", [])
-            direct_records.extend(rss_recs)
+            direct_records.extend(accept_source(rss_recs, "rss", "RSS feeds", "rss"))
             logger.info(f"[{self.__class__.__name__}] RSS Feed Agent: Collected {len(rss_recs)} records")
         except Exception as e:
             logger.error(f"RSS Feed Agent failed: {e}")
+            emitter.source("rss", "RSS feeds", "rss", "failed", 0, error=str(e))
 
         # 4b. SEC EDGAR Agent
         try:
@@ -183,12 +217,14 @@ class PolicyOrchestratorAgent:
             sec_agent = SECEdgarAgent()
             sec_out = sec_agent.execute_task({})
             sec_recs = sec_out.get("records", [])
-            direct_records.extend(sec_recs)
+            direct_records.extend(accept_source(sec_recs, "sec_edgar", "SEC EDGAR", "sec"))
             logger.info(f"[{self.__class__.__name__}] SEC EDGAR Agent: Collected {len(sec_recs)} records")
         except Exception as e:
             logger.error(f"SEC EDGAR Agent failed: {e}")
+            emitter.source("sec_edgar", "SEC EDGAR", "sec", "failed", 0, error=str(e))
 
         all_records.extend(direct_records)
+        emitter.stage("direct_sources", "completed", output_count=len(direct_records))
 
         logger.info(f"[{self.__class__.__name__}] Dispatching Reader Agent...")
         reader_out = reader.execute_task({"records": all_records})
@@ -196,39 +232,47 @@ class PolicyOrchestratorAgent:
             
         # 2. STREAM B: LEGISLATIVE & REGULATORY APIs
         logger.info(f"[{self.__class__.__name__}] Starting Stream B: Legislative & Regulatory API Monitors")
+        emitter.stage("regulatory_apis", "running")
         api_records = []
         
         # 2a. Legislative Monitor
         try:
             legislative_monitor = LegislativeMonitorAgent()
             leg_out = legislative_monitor.execute_task({"run_id": run_id, "cg_key": cg_key, "ls_key": ls_key, "enabled": True})
-            api_records.extend(leg_out.get("records", []))
+            api_records.extend(accept_source(leg_out.get("records", []), "congress", "Congress.gov and LegiScan monitor", "legislative"))
             logger.info(f"[{self.__class__.__name__}] Legislative Monitor: Collected {len(leg_out.get('records', []))} records")
         except Exception as e:
             logger.error(f"Legislative Monitor failed: {e}")
+            emitter.source("congress", "Congress.gov and LegiScan monitor", "legislative", "failed", 0, error=str(e))
 
         # 2b. Federal Register Monitor
         try:
             fr_connector = FederalRegisterConnector({'api_base_url': 'https://www.federalregister.gov/api/v1/articles.json', 'timeout': 30})
             if fr_connector.connect() and fr_connector.authenticate():
                 fr_data = fr_connector.incremental_sync()
+                federal_records = []
                 for item in (fr_data if isinstance(fr_data, list) else []):
-                    api_records.append({
+                    federal_records.append({
                         "title": item.get('title', 'Federal Register Article'),
                         "snippet": (item.get('abstract') or '')[:1000],
                         "source": "Federal Register",
                         "url": item.get('html_url', ''),
                         "date": item.get('publication_date', '')
                     })
+                api_records.extend(accept_source(federal_records, "federal_register", "Federal Register", "regulatory"))
                 fr_connector.shutdown()
                 logger.info(f"[{self.__class__.__name__}] Federal Register: Collected {len(fr_data if isinstance(fr_data, list) else [])} records")
         except Exception as e:
             logger.error(f"Federal Register Monitor failed: {e}")
+            emitter.source("federal_register", "Federal Register", "regulatory", "failed", 0, error=str(e))
 
         # 2c. Regulations.gov Monitor
         try:
             from infrastructure.connectors.regulations_gov_connector import RegulationsGovConnector
-            regs_connector = RegulationsGovConnector({'api_key': os.getenv('REGULATIONS_GOV_API_KEY', 'DEMO_KEY'), 'timeout': 30})
+            regulations_key = os.getenv('REGULATIONS_GOV_API_KEY')
+            if not regulations_key:
+                raise RuntimeError("REGULATIONS_GOV_API_KEY is not configured")
+            regs_connector = RegulationsGovConnector({'api_key': regulations_key, 'timeout': 30})
             if regs_connector.connect() and regs_connector.authenticate():
                 query = {
                     "filter": {"agencyId": "CFPB,FTC,OCC"},
@@ -240,20 +284,23 @@ class PolicyOrchestratorAgent:
                 # Fetch returns a list or a dict with a 'data' key depending on API version
                 fetched_list = regs_data if isinstance(regs_data, list) else regs_data.get('data', []) if isinstance(regs_data, dict) else []
                 
+                regulations_records = []
                 for item in fetched_list:
                     attrs = item.get('attributes', item) if isinstance(item, dict) else {}
                     doc_id = attrs.get('objectId', item.get('id', ''))
-                    api_records.append({
+                    regulations_records.append({
                         "title": attrs.get('title', 'Regulations.gov Document'),
                         "snippet": f"Type: {attrs.get('documentType', 'Rulemaking')} - Agency: {attrs.get('agencyId', 'Unknown')}",
                         "source": "Regulations.gov",
                         "url": f"https://www.regulations.gov/document/{doc_id}",
                         "date": attrs.get('postedDate', '')
                     })
+                api_records.extend(accept_source(regulations_records, "regulations_gov", "Regulations.gov", "regulatory"))
                 regs_connector.shutdown()
                 logger.info(f"[{self.__class__.__name__}] Regulations.gov: Collected {len(fetched_list)} targeted records for CFPB, FTC, OCC")
         except Exception as e:
             logger.error(f"Regulations.gov Monitor failed: {e}")
+            emitter.source("regulations_gov", "Regulations.gov", "regulatory", "failed", 0, error=str(e))
 
         # 2d. CFPB Monitor (Throttled: 7-Day Cooldown)
         try:
@@ -274,8 +321,8 @@ class PolicyOrchestratorAgent:
                 logger.info(f"[{self.__class__.__name__}] CFPB cooldown expired. Fetching fresh complaint data...")
                 cfpb_connector = CFPBConnector()
                 cfpb_data = cfpb_connector.fetch_data({})
-                if isinstance(cfpb_data, list): 
-                    api_records.extend(cfpb_data)
+                if isinstance(cfpb_data, list):
+                    api_records.extend(accept_source(cfpb_data, "cfpb", "Consumer Financial Protection Bureau", "regulatory"))
                 
                 # Update checkpoint
                 chk_data["last_run_cfpb"] = now
@@ -286,9 +333,11 @@ class PolicyOrchestratorAgent:
             else:
                 days_left = round(( (7 * 86400) - (now - last_cfpb) ) / 86400, 1)
                 logger.info(f"[{self.__class__.__name__}] CFPB Monitor skipped (On Cooldown for {days_left} more days).")
+                emitter.source("cfpb", "Consumer Financial Protection Bureau", "regulatory", "skipped", 0, error=f"Cooldown active for {days_left} more days")
                 
         except Exception as e:
             logger.error(f"CFPB Monitor failed: {e}")
+            emitter.source("cfpb", "Consumer Financial Protection Bureau", "regulatory", "failed", 0, error=str(e))
 
 
 
@@ -359,25 +408,22 @@ class PolicyOrchestratorAgent:
                     logger.info(f"LegiScan: Processed {new_bills_found} NEW bills matching BNPL and AI Tech policy.")
             # ----------------------------------------------------------
             
-            api_records.extend(state_recs)
+            api_records.extend(accept_source(state_recs, "state_legislation", "State legislative and regulatory sources", "legislative"))
             logger.info(f"[{self.__class__.__name__}] State Regulator Monitor: Collected {len(state_recs)} records")
         except Exception as e:
             logger.error(f"State Regulator Monitor failed: {e}")
+            emitter.source("state_legislation", "State legislative and regulatory sources", "legislative", "failed", 0, error=str(e))
 
 
-        # 2f. Judicial Monitor
-        try:
-            from agents.judicial_monitor import JudicialMonitorAgent
-            judicial_monitor = JudicialMonitorAgent()
-            jud_out = judicial_monitor.execute_task({"run_id": run_id})
-            jud_recs = jud_out.get("records", [])
-            api_records.extend(jud_recs)
-            logger.info(f"[{self.__class__.__name__}] Judicial Monitor: Collected {len(jud_recs)} records")
-        except Exception as e:
-            logger.error(f"Judicial Monitor failed: {e}")
+        # 2f. Judicial Monitor is disabled until a real court-data connector replaces the simulator.
+        emitter.source("judicial", "Judicial monitor", "judicial", "skipped", 0, error="No production court-data connector is configured")
+        logger.warning(f"[{self.__class__.__name__}] Judicial Monitor skipped: active implementation is simulation-only")
+
+        emitter.stage("regulatory_apis", "completed", output_count=len(api_records))
 
         # 3. STREAM C: SENTIMENT & SOCIAL MONITORS
         logger.info(f"[{self.__class__.__name__}] Starting Stream C: Sentiment & Social Monitors")
+        emitter.stage("sentiment", "running")
         sentiment_records = []
         
 
@@ -386,53 +432,67 @@ class PolicyOrchestratorAgent:
             from agents.news_monitor_agent import NewsMonitorAgent
             news_monitor = NewsMonitorAgent()
             news_out = news_monitor.execute_task({"run_id": run_id, "enabled": True})
-            sentiment_records.extend(news_out.get("records", []))
+            sentiment_records.extend(accept_source(news_out.get("records", []), "news", "News monitor", "news"))
             logger.info(f"[{self.__class__.__name__}] News Monitor: Collected {len(news_out.get('records', []))} records")
         except Exception as e:
             logger.error(f"News Monitor failed: {e}")
+            emitter.source("news", "News monitor", "news", "failed", 0, error=str(e))
 
         # 3a. Market Sentiment
         try:
             market_out = market_sentiment.execute_task({"type": "monitor_market_sentiment", "lookback_hours": 24})
-            for item in market_out.get("analyzed_content", []):
-                sentiment_records.append({
+            market_records = []
+            for item in market_out.get("records", []):
+                market_records.append({
                     "title": item.get('title', 'Market Sentiment'),
                     "snippet": f"Sentiment Score: {item.get('sentiment_score', 0)} | Phrases: {', '.join(item.get('key_phrases', []))}",
                     "source": item.get('source', 'Unknown Market Source'),
                     "url": item.get('url', ''),
                     "date": item.get('published', '')
                 })
-            logger.info(f"[{self.__class__.__name__}] Market Sentiment: Collected {len(market_out.get('analyzed_content', []))} records")
+            sentiment_records.extend(accept_source(market_records, "market_sentiment", "Market sentiment", "sentiment"))
+            logger.info(f"[{self.__class__.__name__}] Market Sentiment: Collected {len(market_out.get('records', []))} records")
         except Exception as e:
             logger.error(f"Market Sentiment Monitor failed: {e}")
+            emitter.source("market_sentiment", "Market sentiment", "sentiment", "failed", 0, error=str(e))
 
         # 3b. Public Statements
         try:
             statement_out = public_statement.execute_task({"run_id": run_id, "enabled": True})
+            statement_records = []
             for item in statement_out.get("records", []):
-                sentiment_records.append({
+                statement_records.append({
                     "title": item.get('title', 'Public Statement'),
                     "snippet": item.get('text_context', ''),
                     "source": item.get('source', 'Social Monitor'),
                     "url": "",
                     "date": ""
                 })
+            sentiment_records.extend(accept_source(statement_records, "public_statements", "Public statements", "public_statement"))
             logger.info(f"[{self.__class__.__name__}] Public Statements: Collected {len(statement_out.get('records', []))} records")
         except Exception as e:
             logger.error(f"Public Statement Monitor failed: {e}")
+            emitter.source("public_statements", "Public statements", "public_statement", "failed", 0, error=str(e))
             
         all_records.extend(sentiment_records)
         all_records.extend(api_records)
         logger.info(f"[{self.__class__.__name__}] Total combined records: {len(all_records)}")
+        emitter.stage("sentiment", "completed", output_count=len(sentiment_records))
 
         # GOLDEN RUN TRUNCATION
         if golden_run and all_records:
             all_records = all_records[:1]
             logger.info(f"[{self.__class__.__name__}] GOLDEN RUN: Truncated to {len(all_records)} record")
 
+        emitter.stage("deduplication", "running", input_count=len(all_records))
         all_records = filter_off_topic_records(all_records)
+        all_records, rejected_nonproduction = partition_production_records(all_records)
+        if rejected_nonproduction:
+            emitter.add_error("deduplication", f"Rejected {len(rejected_nonproduction)} records that used fallback classification or explicit non-production data.", True)
         all_records = deduplicate_records(all_records)
         logger.info(f"[{self.__class__.__name__}] Deduplicated down to {len(all_records)} unique records")
+        emitter.stage("deduplication", "completed", input_count=len(all_records) + len(rejected_nonproduction), output_count=len(all_records))
+        emitter.emit("running")
 
         # LOG VISITS TO INVESTIGATION MEMORY
         if inv_memory:
@@ -466,12 +526,16 @@ class PolicyOrchestratorAgent:
 
         # 3. PIPELINE EXECUTION
         logger.info(f"[{self.__class__.__name__}] Expanding context...")
+        emitter.stage("context_expansion", "running", input_count=len(all_records))
         context_out = ContextExpansionAgent().execute_task({"records": all_records, "run_id": run_id})
         expanded_records = context_out.get("records", [])
+        emitter.stage("context_expansion", "completed", input_count=len(all_records), output_count=len(expanded_records))
         
         logger.info(f"[{self.__class__.__name__}] Analyzing impacts...")
+        emitter.stage("impact_analysis", "running", input_count=len(expanded_records))
         impact_out = ImpactAnalyzerAgent().execute_task({"records": expanded_records, "run_id": run_id})
         findings = impact_out.get("records", [])
+        emitter.stage("impact_analysis", "completed", input_count=len(expanded_records), output_count=len(findings))
 
         # AUTHENTIC HUMAN FEEDBACK LOOP (Awaiting UI)
         low_impact_findings = [f for f in findings if f.get("impact_score") == "low"]
@@ -479,28 +543,43 @@ class PolicyOrchestratorAgent:
             logger.info(f"[{self.__class__.__name__}] Skipping simulated human feedback. Run is 100% authentic.")
         
         logger.info(f"[{self.__class__.__name__}] Compressing {len(findings)} findings...")
+        emitter.stage("compression", "running", input_count=len(findings))
         compression_out = ContextCompressorAgent().execute_task({"findings": findings, "run_id": run_id})
         compressed_findings = compression_out.get("findings", [])
+        emitter.stage("compression", "completed", input_count=len(findings), output_count=len(compressed_findings))
         
         logger.info(f"[{self.__class__.__name__}] Extracting entities...")
+        emitter.stage("entity_resolution", "running", input_count=len(compressed_findings))
         entity_out = EntityResolutionAgent().execute_task({"findings": compressed_findings, "run_id": run_id})
         entity_enriched_findings = entity_out.get("findings", [])
+        emitter.stage("entity_resolution", "completed", input_count=len(compressed_findings), output_count=len(entity_enriched_findings))
         
         logger.info(f"[{self.__class__.__name__}] Scoring risk...")
+        emitter.stage("risk_scoring", "running", input_count=len(entity_enriched_findings))
         risk_out = RiskScoringAgent().execute_task({"findings": entity_enriched_findings, "run_id": run_id})
         risk_scored_findings = risk_out.get("findings", [])
+        emitter.stage("risk_scoring", "completed", input_count=len(entity_enriched_findings), output_count=len(risk_scored_findings))
         
         logger.info(f"[{self.__class__.__name__}] Validating findings...")
+        emitter.stage("validation", "running", input_count=len(risk_scored_findings))
         val_out = ValidationAgent().execute_task({"findings": risk_scored_findings, "run_id": run_id})
         validated_findings = val_out.get("findings", [])
+        validated_findings, rejected_unsafe_findings = partition_production_records(validated_findings)
+        if rejected_unsafe_findings:
+            emitter.add_error("validation", f"Excluded {len(rejected_unsafe_findings)} finding(s) that used analysis fallback paths.", True)
+        emitter.stage("validation", "completed", input_count=len(risk_scored_findings), output_count=len(validated_findings))
+        emitter.emit("running", validated_findings)
         
         try:
+            emitter.stage("graph_sync", "running", input_count=len(validated_findings))
             graph_connector = GraphConnector()
             graph_connector.sync_findings(validated_findings, run_id)
             graph_connector.close()
             logger.info(f"[{self.__class__.__name__}] Synced {len(validated_findings)} findings to Neo4j")
+            emitter.stage("graph_sync", "completed", input_count=len(validated_findings), output_count=len(validated_findings))
         except Exception as e:
             logger.error(f"Failed to sync to Neo4j: {e}")
+            emitter.stage("graph_sync", "skipped", input_count=len(validated_findings), error=str(e))
         
         logger.info(f"[{self.__class__.__name__}] Generating final synthesis report...")
         # TELEMETRY & DEFENSIVE FALLBACK FOR SYNTHESIS
@@ -517,10 +596,19 @@ class PolicyOrchestratorAgent:
             f"Validated={len(validated_recs)}"
         )
 
-        synthesis_input = validated_recs if validated_recs else (compressed_recs if compressed_recs else impact_recs)
+        synthesis_input = validated_recs
         logger.info(f"[{self.__class__.__name__}] Passing {len(synthesis_input)} records to ResearchSynthesisAgent")
+        emitter.stage("synthesis", "running", input_count=len(synthesis_input))
         synth_out = ResearchSynthesisAgent().execute_task({"findings": synthesis_input, "run_id": run_id})
-        ReportingAgent().execute_task({"report_dir": report_dir, "findings": validated_findings, "synthesis": synth_out})
+        synthesis_status = synth_out.get("generation_status", "completed") if isinstance(synth_out, dict) else "failed"
+        emitter.stage("synthesis", "completed" if synthesis_status in {"completed", "no_findings"} else "failed", input_count=len(synthesis_input), output_count=1 if synthesis_status in {"completed", "no_findings"} else 0, error=synth_out.get("error") if isinstance(synth_out, dict) else "Invalid synthesis response")
+        emitter.stage("reporting", "running", input_count=len(validated_findings))
+        report_out = ReportingAgent().execute_task({"report_dir": report_dir, "findings": validated_findings, "synthesis": synth_out})
+        report_status = report_out.get("generation_status", "failed") if isinstance(report_out, dict) else "failed"
+        report_path = report_out.get("report_path") if isinstance(report_out, dict) else None
+        emitter.stage("reporting", "completed" if report_status == "completed" else "failed", input_count=len(validated_findings), output_count=1 if report_status == "completed" else 0, error=report_out.get("error") if isinstance(report_out, dict) else "Invalid report response")
+        final_status = "completed" if report_status == "completed" else "partial"
+        emitter.emit(final_status, validated_findings, report_path if report_status == "completed" else None)
         logger.info(f"[{self.__class__.__name__}] Swarm complete! Report at {report_dir}")
         
         

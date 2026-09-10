@@ -31,6 +31,7 @@ class RiskScoringAgent:
             finding["risk_score"] = 0
             finding["alert_required"] = False
             finding["risk_reasoning"] = "No text to analyze"
+            finding["risk_fallback"] = True
             return finding
 
         if isinstance(entities, list):
@@ -80,6 +81,7 @@ JSON Output:
             finding["risk_score"] = score
             finding["alert_required"] = alert_required
             finding["risk_reasoning"] = reasoning
+            finding["risk_fallback"] = False
             return finding
         except Exception as e:
             print(f"[{self.agent_id}] JSON Parsing Failed: {e}. Using fallback.")
@@ -94,6 +96,7 @@ JSON Output:
         finding["risk_score"] = score
         finding["alert_required"] = score >= 80
         finding["risk_reasoning"] = f"Fallback scoring: keyword_count={keyword_count}"
+        finding["risk_fallback"] = True
         return finding
 
     def execute_task(self, payload):

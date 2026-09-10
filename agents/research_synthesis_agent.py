@@ -45,19 +45,9 @@ class ResearchSynthesisAgent:
         
         if not validated_high_medium:
             return {
-                "executive_summary": "No high or medium impact threats detected in this intelligence cycle.",
-                "bluf_opportunity": "Maintain current baseline posture while monitoring state feeds.",
-                "threat_severity": "LOW",
-                "primary_regulator": "None",
-                "congressional_radar": "No immediate legislative action required.",
-                "agency_enforcement": "Federal agencies maintain standard oversight.",
-                "state_escalation": "State feeds remain within nominal bounds.",
-                "underwriting_impact": "No immediate underwriting changes required.",
-                "servicing_impact": "No servicing adjustments required.",
-                "marketing_impact": "Standard POS disclosure compliance maintained.",
-                "moat_analysis": "Affirm zero-late-fee model maintains strategic positioning.",
-                "advocacy_origin": "N/A",
-                "advocacy_directives": []
+                "generation_status": "no_findings",
+                "executive_summary": "No validated production findings were available for synthesis.",
+                "advocacy_directives": [],
             }
         
         records_text = []
@@ -121,23 +111,10 @@ CRITICAL INSTRUCTION: Output ONLY valid, parseable JSON. No markdown fences, no 
         parsed = self._parse_llm_response(llm_response) if llm_response else None
         
         if parsed and isinstance(parsed, dict) and "executive_summary" in parsed:
+            parsed["generation_status"] = "completed"
             return parsed
         else:
             return {
-                "executive_summary": f"Synthesized {len(validated_high_medium)} validated policy findings across federal and state vectors.",
-                "bluf_opportunity": "Increased scrutiny on hidden and late fees structurally favors Affirm's zero-late-fee business model over fee-reliant competitors.",
-                "threat_severity": "MEDIUM",
-                "primary_regulator": "FTC / CA DFPI / Senate Banking",
-                "congressional_radar": "Congressional committees are actively examining alternative credit scoring and fee transparency.",
-                "agency_enforcement": "The FTC is expanding consumer protection oversight on digital financing disclosures.",
-                "state_escalation": "State regulators like CA DFPI are modifying digital asset and income-based advance definitions.",
-                "underwriting_impact": "Potential scrutiny on FICO integration of BNPL tradelines and ability-to-repay rules.",
-                "servicing_impact": "Operational review required for dispute handling and transparency standards.",
-                "marketing_impact": "Audit point-of-sale APR disclosures and promotional messaging.",
-                "moat_analysis": "Regulatory caps on late fees penalize competitors while validating Affirm's core model.",
-                "advocacy_origin": "Center for Responsible Lending / National Consumer Law Center",
-                "advocacy_directives": [
-                    {"target": "House Financial Services Committee", "action": "Staff Briefing", "objective": "Protect BNPL credit reporting integration", "deadline": "Q3 2026"},
-                    {"target": "California DFPI", "action": "Public Comment", "objective": "Secure POS installment carve-outs", "deadline": "Q4 2026"}
-                ]
+                "generation_status": "failed",
+                "error": "Synthesis model did not return a valid production response.",
             }

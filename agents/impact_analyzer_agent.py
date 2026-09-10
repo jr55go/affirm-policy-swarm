@@ -52,7 +52,8 @@ class ImpactAnalyzerAgent:
                 return {
                     "impact_score": str(data.get("impact_score", "medium")).lower(),
                     "explicit_source_facts": self._clean_text(data.get("explicit_source_facts", "")),
-                    "inferred_market_impact": self._clean_text(data.get("inferred_market_impact", ""))
+                    "inferred_market_impact": self._clean_text(data.get("inferred_market_impact", "")),
+                    "impact_fallback": False,
                 }
             return json.loads(response_text)
         except Exception as e:
@@ -60,7 +61,8 @@ class ImpactAnalyzerAgent:
             return {
                 "impact_score": "medium", 
                 "explicit_source_facts": "Document analysis extracted directly from raw context.",
-                "inferred_market_impact": self._clean_text(response_text)
+                "inferred_market_impact": self._clean_text(response_text),
+                "impact_fallback": True,
             }
 
     def execute_task(self, payload):
@@ -96,6 +98,7 @@ Output ONLY raw valid JSON:
             llm_response = self._call_ollama(prompt)
             
             if llm_response is None:
+                item["impact_fallback"] = True
                 text = context.lower()
                 if any(term in text for term in ["bnpl", "credit", "rule", "finance", "affirm"]):
                     item["impact_score"] = "high"
@@ -111,6 +114,7 @@ Output ONLY raw valid JSON:
                     item["impact_score"] = parsed.get("impact_score", "medium")
                     item["explicit_source_facts"] = parsed.get("explicit_source_facts", "")
                     item["inferred_market_impact"] = parsed.get("inferred_market_impact", "")
+                    item["impact_fallback"] = bool(parsed.get("impact_fallback", False))
 
             analyzed_records.append(item)
             
