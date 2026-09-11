@@ -423,10 +423,10 @@ class SourceRegistry:
                 self._catalog[source_name]["last_error"] = error
 
     def list_enabled_sources(self) -> list:
-        return [name for name, meta in self._catalog.items() if meta["enabled"]]
+        return [name for name, meta in self._catalog.items() if meta.get("enabled", meta.get("status") == "active")]
 
     def get_enabled_sources_by_type(self, source_type: str) -> list:
-        return [name for name, meta in self._catalog.items() if meta["enabled"] and meta["source_type"] == source_type]
+        return [name for name, meta in self._catalog.items() if meta.get("enabled", meta.get("status") == "active") and meta.get("source_type") == source_type]
 
     def get_fallback_data(self, source_name: str):
         """Production policy forbids substituting sample records for unavailable sources."""

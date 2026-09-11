@@ -113,18 +113,9 @@ class DiscoveryAgent:
                     except Exception:
                         pass
 
-                # 3. The "Human Researcher" Direct Navigation Fallback
+                # 3. Direct Navigation Fallback removed (ING-04)
                 if not hits and "site:" in clean_q:
-                    import re as reg_mod
-                    site_match = reg_mod.search(r'site:([^\s]+)', clean_q)
-                    if site_match:
-                        domain = site_match.group(1)
-                        hits.append({
-                            "query_vector": query,
-                            "title": f"Direct Navigation: {domain}",
-                            "snippet": "Search engines blocked. Performing direct site reconnaissance.",
-                            "url": f"https://{domain}"
-                        })
+                    logging.warning(f"Search blocked for {clean_q}. Emitting attempt failure only.")
 
                 # Apply blocklist filter
                 filtered_hits = []
@@ -227,7 +218,8 @@ class DiscoveryAgent:
             if self.gatekeeper_check(r["query_vector"], r["snippet"], threshold=6):
                 r["source"] = "Web Intelligence"
                 r["text_context"] = f"{r['title']} - {r['snippet']}"
-                r["date"] = datetime.now().strftime('%Y-%m-%d')
+                r["date"] = None  # ING-04: Stop assigning collector date as source date
+                r["retrieved_at"] = datetime.now().isoformat()
                 r["jurisdiction"] = "Multi-Jurisdictional"
                 candidates.append(r)
                 seen_urls.add(url)

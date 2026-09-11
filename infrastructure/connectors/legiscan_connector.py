@@ -30,7 +30,8 @@ class LegiScanConnector(BaseSourceConnector):
             config: Dictionary containing configuration for the connector
                    Expected keys: 'api_base_url', 'timeout', 'rate_limit_delay', 'api_key'
         """
-        super().__init__(config)
+        super().__init__("LegiScanConnector", config)
+        self.is_connected = False
         self.api_base_url = config.get('api_base_url', 'https://api.legiscan.com/')
         self.timeout = config.get('timeout', 30)
         self.rate_limit_delay = config.get('rate_limit_delay', 1.0)
@@ -436,24 +437,4 @@ class LegiScanConnector(BaseSourceConnector):
         except Exception as e:
             self.logger.error(f"Error during LegiScan connector shutdown: {str(e)}")
             return False
-    def normalize(self, raw_data):
-        return []
 
-    def deduplicate(self, records):
-        return records
-
-    def checkpoint(self, checkpoint_data):
-        pass
-
-    def incremental_sync(self):
-        return []
-
-    def rate_limit(self):
-        import time
-        time.sleep(self.rate_limit_delay)
-
-    def retry(self, exception, attempt):
-        return attempt < 3
-
-    def metadata(self):
-        return {"name": "LegiScanConnector"}

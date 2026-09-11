@@ -1,4 +1,7 @@
-import feedparser
+try:
+    import feedparser
+except ImportError:
+    feedparser = None
 import logging
 from datetime import datetime, timedelta
 
@@ -46,6 +49,9 @@ class RSSFeedAgent:
         }
 
     def execute_task(self, payload={}):
+        if feedparser is None:
+            logging.error(f"[{self.agent_id}] Preflight failure: feedparser is missing.")
+            return []
         records = []
         for section, feed_urls in self.feeds.items():
             for url in feed_urls:

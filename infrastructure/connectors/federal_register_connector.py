@@ -189,10 +189,10 @@ class FederalRegisterConnector(BaseSourceConnector):
 
         except RequestException as e:
             self.logger.error(f"Request to Federal Register API failed: {str(e)}")
-            return []
+            raise RuntimeError(f"Federal Register fetch failed: {str(e)}")
         except Exception as e:
             self.logger.error(f"Unexpected error fetching data from Federal Register API: {str(e)}")
-            return []
+            raise RuntimeError(f"Federal Register unexpected error: {str(e)}")
 
     def normalize(self, raw_data: Dict[str, Any]) -> NormalizedPolicyEvent:
         """
@@ -303,11 +303,17 @@ class FederalRegisterConnector(BaseSourceConnector):
         # Fetch new data (returns list of articles)
         raw_data_list = self.fetch(query)
 
-        # Record a new timestamp
-        new_cursor = {"last_sync_date": datetime.now(timezone.utc).isoformat()}
-
-        # Save the state
-        self.checkpoint(new_cursor)
+        # Only advance the cursor if the fetch returned data, otherwise keep the old one.
+        # ING-06: Do not advance to datetime.now() on empty or failed collection.
+        if raw_data_list and isinstance(raw_data_list, list) and len(raw_data_list) > 0:
+            # Safely parse highest date from actual fetched records or default to last_sync
+            max_date = last_sync_date
+            for record in raw_data_list:
+                pub_date = record.get("publication_date")
+                if pub_date and (not max_date or pub_date > max_date):
+                    max_date = pub_date
+            if max_date:
+                self.checkpoint({"last_sync_date": max_date})
 
         # Return the fetched raw data
         return raw_data_list

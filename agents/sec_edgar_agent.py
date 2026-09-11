@@ -33,24 +33,33 @@ class SECEdgarAgent:
                     "enddt": today,
                 }
                 resp = requests.get(self.BASE, params=params, headers=self.headers, timeout=15)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    for hit in data.get("hits", {}).get("hits", [])[:3]:
-                        src = hit.get("_source", {})
-                        entity_name = src.get("entity_name", "Unknown Entity")
-                        form_type = src.get("form_type", "Filing")
-                        file_date = src.get("file_date", today)
-                        file_num = src.get("file_num", "")
-                        
-                        records.append({
-                            "title": f"SEC EDGAR Filing ({form_type}): {entity_name}",
-                            "snippet": f"Entity: {entity_name} | Form: {form_type} | Filed: {file_date} | Query: {q}",
-                            "url": f"https://www.sec.gov/edgar/browse/?CIK={file_num}",
-                            "source": "SEC EDGAR Official Feed",
-                            "section_tag": "internal_alignment" if "Affirm" in entity_name else "bnpl_competitive",
-                            "date": file_date,
-                            "text_context": f"Official SEC Regulatory Filing for {entity_name} regarding {q}. Form type: {form_type} on {file_date}."
-                        })
+                if resp.status_code != 200:
+                    raise RuntimeError(f"SEC API returned HTTP {resp.status_code}")
+                
+                data = resp.json()
+                for hit in data.get("hits", {}).get("hits", [])[:3]:
+                    src = hit.get("_source", {})
+                    display_names = src.get("display_names", ["Unknown Entity"])
+                    entity_name = display_names[0] if display_names else "Unknown Entity"
+                    form_type = src.get("form", "Filing")
+                    file_date = src.get("file_date", today)
+                    ciks = src.get("ciks", [""])
+                    cik = ciks[-1] if ciks else ""
+                    adsh_raw = src.get("adsh", "")
+                    adsh_clean = adsh_raw.replace("-", "")
+                    
+                    canonical_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{adsh_clean}/{adsh_raw}-index.htm" if cik and adsh_clean else f"https://www.sec.gov/edgar/browse/?CIK={cik}"
+                    
+                    records.append({
+                        "title": f"SEC EDGAR Filing ({form_type}): {entity_name}",
+                        "snippet": f"Entity: {entity_name} | Form: {form_type} | Filed: {file_date} | Query: {q}",
+                        "url": canonical_url,
+                        "sourceRecordId": adsh_raw,
+                        "source": "SEC EDGAR Official Feed",
+                        "section_tag": "internal_alignment" if "Affirm" in entity_name else "bnpl_competitive",
+                        "date": file_date,
+                        "text_context": f"Official SEC Regulatory Filing for {entity_name} regarding {q}. Form type: {form_type} on {file_date}."
+                    })
             except Exception as e:
                 logging.warning(f"[{self.agent_id}] SEC search warning for '{q}': {e}")
                 
