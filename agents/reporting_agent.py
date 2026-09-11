@@ -12,7 +12,34 @@ class ReportingAgent:
         # Use a heavy frontier model for deep executive synthesis
         self.model = model
 
-    def execute_task(self, payload):
+        def execute_task(self, payload):
+        report_dir = payload.get("report_dir")
+        findings = payload.get("findings", [])
+        synthesis = payload.get("synthesis", {})
+        today_str = datetime.now().strftime("%Y-%m-%d")
+
+        # Phase 0: If no eligible findings exist, output a strict deterministic no-findings report
+        if not findings:
+            logging.warning(f"[{self.agent_id}] Phase 0 Containment: Zero eligible findings provided. Rendering deterministic NO-FINDINGS report.")
+            report_path = os.path.join(report_dir, "report.md") if report_dir else "report.md"
+            if report_dir:
+                os.makedirs(report_dir, exist_ok=True)
+            no_findings_content = f"""# 📝 REGULATORY & PUBLIC AFFAIRS MEMORANDUM
+
+**TO:** Scott Astrada, Director of Public Policy  
+**FROM:** Regulatory Risk & Policy Strategy Swarm  
+**DATE:** {today_str}  
+**SUBJECT:** Executive Policy Briefing: No Admissible Findings  
+
+---
+
+> **PHASE 0 GOVERNANCE NOTICE:** Zero current-run records met strict production eligibility criteria (canonical locators, span verification, and pass status). In accordance with fail-closed governance, no strategic advocacy claims or speculative regulatory conclusions are asserted for this cycle.
+
+---
+"""
+            with open(report_path, "w", encoding='utf-8') as f:
+                f.write(no_findings_content)
+            return {"report_path": report_path}
         report_dir = payload.get("report_dir")
         findings = payload.get("findings", [])
         synthesis = payload.get("synthesis", {})

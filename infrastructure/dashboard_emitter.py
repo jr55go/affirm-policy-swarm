@@ -15,58 +15,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-
-SCHEMA_VERSION = "1.0.0"
-EMITTER_VERSION = "1.0.0"
-RUN_ID_PATTERN = re.compile(r"^run_[0-9]{9,}$")
-UNSAFE_TEXT_PATTERN = re.compile(r"\b(mock|dummy|simulated|synthetic|demo)\b", re.IGNORECASE)
-
-STAGE_LABELS = {
-    "discovery": "Web discovery and triage",
-    "direct_sources": "Direct RSS and SEC sources",
-    "regulatory_apis": "Legislative and regulatory APIs",
-    "sentiment": "News and public narrative",
-    "deduplication": "Topic gating and deduplication",
-    "context_expansion": "Source context expansion",
-    "impact_analysis": "Policy impact analysis",
-    "compression": "Evidence compression",
-    "entity_resolution": "Entity resolution",
-    "risk_scoring": "Policy risk scoring",
-    "validation": "Factual validation",
-    "graph_sync": "Optional graph synchronization",
-    "synthesis": "Executive synthesis",
-    "reporting": "Report generation",
-}
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _code_version() -> str:
-    configured = os.getenv("SWARM_CODE_VERSION", "").strip()
-    if configured:
-        return configured
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL, text=True
-        ).strip()
-    except Exception:
-        return "unversioned-runtime"
-
-
-def _list(value: Any) -> List[str]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    text = str(value).strip()
-    return [text] if text else []
-
-
-def _timestamp(value: Any, fallback: str) -> str:
+def _timestamp(value: Any, fallback: str) -> Optional[str]:
     if not value:
-        return fallback
+        return None
     text = str(value).strip()
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
@@ -74,7 +25,7 @@ def _timestamp(value: Any, fallback: str) -> str:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     except ValueError:
-        return fallback
+        return None
 
 
 def partition_production_records(records: Iterable[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -111,91 +62,9 @@ class DashboardRunEmitter:
         self.stages: Dict[str, Dict[str, Any]] = {}
         self.sources: Dict[str, Dict[str, Any]] = {}
         self.errors: List[Dict[str, Any]] = []
-        self.report_dir.mkdir(parents=True, exist_ok=True)
-
-    def stage(self, key: str, status: str, input_count: int = 0, output_count: int = 0, error: Optional[str] = None) -> None:
-        if key not in STAGE_LABELS:
-            raise ValueError(f"Unsupported dashboard stage: {key}")
-        now = utc_now()
-        previous = self.stages.get(key, {})
-        started_at = previous.get("startedAt")
-        if status == "running" and not started_at:
-            started_at = now
-        self.stages[key] = {
-            "key": key,
-            "label": STAGE_LABELS[key],
-            "status": status,
-            "startedAt": started_at,
-            "completedAt": now if status in {"completed", "failed", "skipped"} else None,
-            "updatedAt": now,
-            "inputCount": max(0, int(input_count)),
-            "outputCount": max(0, int(output_count)),
-            "error": str(error) if error else None,
-        }
-        if error:
-            self.add_error(key, str(error), recoverable=status != "failed")
-        self.emit("running")
-
-    def source(self, key: str, name: str, category: str, status: str, record_count: int, error: Optional[str] = None, used_fallback: bool = False) -> None:
-        if used_fallback:
-            status = "failed"
-            record_count = 0
-            error = error or "Fallback output was rejected by production policy."
-            self.add_error(key, error, recoverable=True)
-        self.sources[key] = {
-            "key": key,
-            "name": name,
-            "category": category,
-            "status": status,
-            "recordCount": max(0, int(record_count)),
-            "checkedAt": utc_now(),
-            "usedFallback": False,
-            "error": str(error) if error else None,
-        }
-
-    def add_error(self, stage: str, message: str, recoverable: bool) -> None:
-        self.errors.append({
-            "stage": stage,
-            "message": str(message),
-            "occurredAt": utc_now(),
-            "recoverable": bool(recoverable),
-        })
-
-    def _unsafe(self, finding: Dict[str, Any]) -> bool:
-        flags = (
-            "impact_fallback", "entity_fallback", "risk_fallback", "validation_fallback",
-            "triage_fallback", "is_fallback", "is_mock", "is_simulated", "mock", "simulated",
-        )
-        if any(bool(finding.get(flag)) for flag in flags):
-            return True
-        return bool(UNSAFE_TEXT_PATTERN.search(f"{finding.get('title', '')} {finding.get('source', '')}"))
-
-    def _finding(self, finding: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        if self._unsafe(finding) or finding.get("validation_status") != "approved":
+        url = str(finding.get("url") or "").strip()
+        if not url or not url.startswith("https://"):
             return None
-        title = str(finding.get("title", "")).strip()
-        source_name = str(finding.get("source") or finding.get("source_name") or "").strip()
-        if not title or not source_name:
-            return None
-        try:
-            risk = int(finding["policy_risk_score"])
-        except (KeyError, TypeError, ValueError):
-            return None
-        if risk < 0 or risk > 100:
-            return None
-        impact = str(finding.get("impact_score", "")).lower()
-        if impact not in {"high", "medium", "low"}:
-            return None
-        confidence = finding.get("confidence", finding.get("relevance_score", 0))
-        try:
-            confidence = min(1.0, max(0.0, float(confidence)))
-        except (TypeError, ValueError):
-            confidence = 0.0
-        raw_context = str(
-            finding.get("full_text") or finding.get("text_context") or finding.get("snippet") or ""
-        ).strip()
-        summary = str(finding.get("compressed_summary") or finding.get("summary") or finding.get("snippet") or "").strip()
-        url = str(finding.get("url") or "").strip() or None
         content_basis = raw_context or summary or title
         content_hash = str(finding.get("document_hash") or "").strip()
         if not re.fullmatch(r"[a-fA-F0-9]{32,128}", content_hash):
@@ -273,7 +142,7 @@ class DashboardRunEmitter:
             })
         return investigations
 
-    def build_bundle(self, status: str, records: Iterable[Dict[str, Any]] = (), report_path: Optional[str] = None) -> Dict[str, Any]:
+    def build_bundle(self, status: str, records: Optional[Iterable[Dict[str, Any]]] = None, report_path: Optional[str] = None) -> Dict[str, Any]:
         now = utc_now()
         self.updated_at = now
         self.status = status
@@ -281,10 +150,14 @@ class DashboardRunEmitter:
             self.completed_at = now
         if status == "failed":
             self.failed_at = now
-        safe_findings = self._findings(records)
+        if records is not None:
+            self._latest_records = list(records)
+        if report_path is not None:
+            self._latest_report_path = report_path
+        safe_findings = self._findings(self._latest_records)
         report = None
-        if report_path:
-            path = Path(report_path)
+        if self._latest_report_path:
+            path = Path(self._latest_report_path)
             if path.exists():
                 content = path.read_text(encoding="utf-8").strip()
                 if content:
@@ -321,7 +194,7 @@ class DashboardRunEmitter:
             raise ValueError("A completed production run requires an actual generated report")
         return bundle
 
-    def emit(self, status: str, records: Iterable[Dict[str, Any]] = (), report_path: Optional[str] = None) -> Dict[str, Any]:
+    def emit(self, status: str, records: Optional[Iterable[Dict[str, Any]]] = None, report_path: Optional[str] = None) -> Dict[str, Any]:
         bundle = self.build_bundle(status, records, report_path)
         target = self.report_dir / "dashboard_bundle.json"
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=self.report_dir, delete=False) as temp:
@@ -338,6 +211,12 @@ class DashboardRunEmitter:
         token = os.getenv("DASHBOARD_INGEST_TOKEN", "").strip()
         if not endpoint or not token:
             return
+<<<<<<< HEAD
+=======
+        if validate_ingest_url is None:
+            raise RuntimeError("scripts/private_http.py is required beside the integration package")
+        validate_ingest_url(endpoint)
+>>>>>>> e5095c2 (feat(phase-0): enforce fail-closed evidence lifecycle and strict schema contracts)
         timeout = float(os.getenv("DASHBOARD_INGEST_TIMEOUT_SECONDS", "30"))
         request = urllib.request.Request(
             endpoint,

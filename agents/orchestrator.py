@@ -154,6 +154,15 @@ class PolicyOrchestratorAgent:
         
         logger.info(f"[{self.__class__.__name__}] Starting swarm run: {run_id}")
 
+        # DASHBOARD HOOK 1: Initialization
+        try:
+            from infrastructure.dashboard_emitter import DashboardRunEmitter
+            dashboard = DashboardRunEmitter(run_id=run_id, report_dir=report_dir, objective="Affirm policy intelligence production run")
+            dashboard.emit("starting")
+        except Exception as e:
+            logger.error(f"Failed to initialize Dashboard Emitter: {e}")
+            dashboard = None
+
         # BOOT SEQUENCE: RETRIEVE ANALYST NOTEBOOK
         notebook_state, inv_memory = [], None
         try:
@@ -582,6 +591,10 @@ class PolicyOrchestratorAgent:
             logger.error(f"Failed to sync to Neo4j: {e}")
             emitter.stage("graph_sync", "skipped", input_count=len(validated_findings), error=str(e))
         
+        # DASHBOARD HOOK 2: Emit validated records before synthesis
+        if dashboard and 'validated_findings' in locals():
+            dashboard.emit("running", records=validated_findings)
+
         logger.info(f"[{self.__class__.__name__}] Generating final synthesis report...")
         # TELEMETRY & DEFENSIVE FALLBACK FOR SYNTHESIS
         expanded_recs = expanded_records if 'expanded_records' in locals() else []
@@ -597,6 +610,22 @@ class PolicyOrchestratorAgent:
             f"Validated={len(validated_recs)}"
         )
 
+        # Phase 0: Enforce Production Eligibility Gate
+        from infrastructure.production_eligibility import is_production_eligibility
+        
+        eligible_findings = [f for f in validated_recs if is_production_eligibility(f)]
+        
+        logger.info(f"[{self.__class__.__name__}] Pre-Gate: {len(validated_recs)} | Post-Gate (Eligible): {len(eligible_findings)}")
+        
+        # NEVER fallback to unvalidated arrays. Only pass eligible findings.
+        # Phase 0: Enforce strict production eligibility gate
+        from infrastructure.production_eligibility import is_production_eligible
+        eligible_findings = [f for f in validated_findings if is_production_eligible(f)]
+        logger.info(f"[{self.__class__.__name__}] Pre-Gate: {len(validated_findings)} | Post-Gate (Eligible): {len(eligible_findings)}")
+        synthesis_input = eligible_findings
+        logger.info(f"[{self.__class__.__name__}] Passing {len(synthesis_input)} eligible records to ResearchSynthesisAgent")
+        synth_out = ResearchSynthesisAgent().execute_task({"findings": synthesis_input, "run_id": run_id})
+        ReportingAgent().execute_task({"report_dir": report_dir, "findings": eligible_findings, "synthesis": synth_out})
         synthesis_input = validated_recs
         logger.info(f"[{self.__class__.__name__}] Passing {len(synthesis_input)} records to ResearchSynthesisAgent")
         emitter.stage("synthesis", "running", input_count=len(synthesis_input))
@@ -611,6 +640,11 @@ class PolicyOrchestratorAgent:
         final_status = "completed" if report_status == "completed" else "partial"
         emitter.emit(final_status, validated_findings, report_path if report_status == "completed" else None)
         logger.info(f"[{self.__class__.__name__}] Swarm complete! Report at {report_dir}")
+
+        # DASHBOARD HOOK 3: Final Delivery
+        if dashboard:
+            report_path = os.path.join(report_dir, "report.md")
+            dashboard.emit("completed", records=eligible_findings, report_path=report_path if os.path.exists(report_path) else None)
         
         
         # SYNTHESIZE & UPDATE PERSISTENT TEMPORAL MEMORY

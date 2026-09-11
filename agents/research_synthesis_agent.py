@@ -70,22 +70,19 @@ class ResearchSynthesisAgent:
         today_str = datetime.now().strftime("%Y-%m-%d")
         
         prompt = f"""
-You are the Chief Regulatory Strategy Advisor preparing a high-level executive memo for Scott Astrada (Director of Public Policy at Affirm, ex-Senate Banking Committee, OMB, and CRL).
+You are the Chief Regulatory Strategy Advisor preparing a high-level executive memo.
 
-TEMPORAL ANCHOR, GROUND TRUTH & CONSTRAINTS:
-- Today's Date is {today_str}.
-- 2025/2026 GROUND TRUTH BASELINE: The CFPB officially withdrew its 2024 BNPL Interpretive Rule in May 2025 and paused federal enforcement. The regulatory threat has fractured to the STATE level (e.g., Illinois passed a massive BNPL law in June 2026).
-- STRICT CLOSED-WORLD RULE: You are strictly forbidden from bringing in outside knowledge or inventing bill numbers, dockets, or dates.
-- NULL STATE REQUIREMENT: If the provided text does not contain explicit evidence of active 2026 legislation, output "None active." If no agency enforcement is present in context, output "No immediate threat."
-- CLEAN PROSE: Output clean Markdown prose inside JSON strings. Never embed unparsed JSON strings or curly braces in values.
-- All proposed advocacy directives MUST be forward-looking in 2026 or 2027 (e.g. Q3 2026, 30 Days). NEVER reference 2024.
-
-Analyze all findings through the lens of strategic advocacy, product architecture impact, and competitive moat weaponization against fee-dependent rivals (Klarna, Afterpay, Sezzle).
+STRICT EVIDENCE AND CLAIM CONSTRAINTS (PHASE 0):
+1. You may ONLY synthesize claims using the provided evidence records below.
+2. Every factual claim MUST be followed by its source Record number.
+3. Do not invent, hallucinate, or bring in outside knowledge (NO baseline assumptions, NO assumed Illinois or CFPB actions).
+4. If the provided evidence is empty or contains no relevant threats, you must output a deterministic NO-FINDINGS report plan.
+5. Clean Markdown prose inside JSON strings only.
 
 VALIDATED INTELLIGENCE RECORDS:
 {records_block}
 
-Synthesize these findings into an authoritative executive intelligence memorandum.
+Synthesize these findings into an authoritative executive intelligence memorandum based EXCLUSIVELY on the records above.
 
 Your response MUST be a valid JSON object with these exact keys:
 1. "executive_summary": A high-impact synthesis paragraph summarizing the macro regulatory vector.
