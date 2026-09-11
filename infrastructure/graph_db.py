@@ -71,8 +71,7 @@ class GraphConnector:
         :param run_id: Unique identifier for this run (used for Observation nodes)
         """
         if not self.driver:
-            logging.warning("[GraphConnector] No database connection. Skipping sync.")
-            return
+            raise RuntimeError("[GraphConnector] No database connection. Cannot sync evidence (fail-closed).")
 
         if run_id is None:
             # Generate a run_id if not provided
@@ -106,41 +105,46 @@ class GraphConnector:
                         MERGE (s:Source {name: $source_name})
                         """, source_name=source_name)
 
-                        # Merge PolicyRecord node by title and jurisdiction (composite key for uniqueness)
+                        # Merge PolicyRecord node by url (canonical locator for uniqueness - PERS-04)
+                        url = finding.get("url")
+                        if not url:
+                            raise ValueError(f"Missing canonical locator (url) for record: {title}")
+                            
                         tx.run("""
-                        MERGE (p:PolicyRecord {title: $title, jurisdiction: $jurisdiction_name})
-                        """, title=title, jurisdiction_name=jurisdiction_name)
+                        MERGE (p:PolicyRecord {url: $url})
+                        SET p.title = $title, p.jurisdiction = $jurisdiction_name
+                        """, url=url, title=title, jurisdiction_name=jurisdiction_name)
 
                         # Update the PolicyRecord with current state (so it always reflects the latest)
                         tx.run("""
-                        MATCH (p:PolicyRecord {title: $title, jurisdiction: $jurisdiction_name})
+                        MATCH (p:PolicyRecord {url: $url})
                         SET p.context = $context,
                             p.analysis = $analysis,
                             p.impact_score = $impact_score,
                             p.validation_status = $validation_status,
                             p.compressed_summary = $compressed_summary
-                        """, title=title, jurisdiction_name=jurisdiction_name,
+                        """, url=url, title=title, jurisdiction_name=jurisdiction_name,
                              context=context, impact_score=impact_score,
                              analysis=analysis, validation_status=validation_status,
                              compressed_summary=compressed_summary)
 
                         # Link PolicyRecord to Jurisdiction (create if not exists)
                         tx.run("""
-                        MATCH (p:PolicyRecord {title: $title, jurisdiction: $jurisdiction_name})
+                        MATCH (p:PolicyRecord {url: $url})
                         MATCH (j:Jurisdiction {name: $jurisdiction_name})
                         MERGE (p)-[:GOVERNED_BY]->(j)
-                        """, title=title, jurisdiction_name=jurisdiction_name)
+                        """, url=url, title=title, jurisdiction_name=jurisdiction_name)
 
                         # Link PolicyRecord to Source (create if not exists)
                         tx.run("""
-                        MATCH (p:PolicyRecord {title: $title, jurisdiction: $jurisdiction_name})
+                        MATCH (p:PolicyRecord {url: $url})
                         MATCH (s:Source {name: $source_name})
                         MERGE (p)-[:SOURCE]->(s)
-                        """, title=title, jurisdiction_name=jurisdiction_name, source_name=source_name)
+                        """, url=url, title=title, jurisdiction_name=jurisdiction_name, source_name=source_name)
 
                         # Create an Observation node for this run, containing the state at this point in time
                         tx.run("""
-                        MATCH (p:PolicyRecord {title: $title, jurisdiction: $jurisdiction_name})
+                        MATCH (p:PolicyRecord {url: $url})
                         CREATE (o:Observation {
                             run_id: $run_id,
                             timestamp: datetime(),
@@ -149,7 +153,7 @@ class GraphConnector:
                             compressed_summary: $compressed_summary
                         })
                         MERGE (p)-[:HAS_OBSERVATION]->(o)
-                        """, title=title, jurisdiction_name=jurisdiction_name,
+                        """, url=url, title=title, jurisdiction_name=jurisdiction_name,
                              run_id=run_id, impact_score=impact_score,
                              validation_status=validation_status,
                              compressed_summary=compressed_summary)
@@ -161,7 +165,7 @@ class GraphConnector:
                                 tx.run("""
                                 MERGE (o:Organization {name: $org_name})
                                 WITH o
-                                MATCH (p:PolicyRecord {title: $title, jurisdiction: $jurisdiction_name})
+                                MATCH (p:PolicyRecord {url: $url})
                                 MERGE (p)-[:MENTIONS]->(o)
                                 """, org_name=org_name.strip(), title=title, jurisdiction_name=jurisdiction_name)
 
