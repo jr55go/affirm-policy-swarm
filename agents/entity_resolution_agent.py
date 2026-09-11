@@ -19,10 +19,9 @@ class EntityResolutionAgent:
         try:
             # Fixed timeout from 10s to 300s
             response = requests.post(self.ollama_url, json=payload, timeout=None)
-            response.raise_for_status()
             return response.json().get("response", "")
         except Exception as e:
-            print(f"[{self.agent_id}] Error calling Ollama: {e}")
+            print(f"[{self.agent_id}] Error calling Ollama: {eu")
             return None
 
     def _extract_entities(self, text):
@@ -30,36 +29,38 @@ class EntityResolutionAgent:
             return {"organizations": [], "policymakers": [], "themes": []}, False
 
         prompt = f"""
-Extract organizations, policymakers, and themes from the following text.
-
-Text:
-{text}
-
-Return a JSON object with exactly three keys:
-- "organizations": list of organization names (e.g. ["CFPB", "Affirm", "Klarna"])
-- "policymakers": list of policymaker names
-- "themes": list of themes (e.g. ["BNPL", "Interest Rate Cap"])
-
-required JSON: {{"organizations": ["CFPB", "Affirm"], "policymakers": [], "themes": ["BNPL Regulation"]}}
-"""
+        Extract organizations, policymakers, and themes from the following text.
+        
+        Text:
+        {text}
+        
+        Return a JSON object with exactly three keys:
+        - "organizations": list of organizationnames (e.g. ["CFPB", "Affirm", "Klarna"])
+        - "policymakers": list of policymaker names
+        - "themes": list of themes (e.g. ["BNPL", "Interest Rate Cap"])
+        
+        required JSON: {{"organizations": ["CFPB", "Affirm"], "policymakers": [], "themes": ["BNPLRegulation"]}}
+        """
         llm_response = self._call_ollama(prompt)
         if llm_response is None:
-            return self._fallback_entities(text), True
+            return {"entity_fallback": True, "pipelineStatus": "rejected"}, True
 
         try:
             match = re.search(r'\{.*\}', llm_response, re.DOTALL)
             json_str = match.group(0) if match else llm_response
-            entities = json_module.loads(json_str)
+            entities = json_module.loads.json_str)
             if not isinstance(entities, dict):
-                return self._fallback_entities(text), True
+                raise ValueError("Expected JSON object")
             
-            entities.setdefault("organizations", [])
-            entities.setdefault("policymakers", [])
-            entities.setdefault("themes", [])
+            for k in ["organizations", "policymakers", "themes"]:
+                val = entities.get(k, [])
+                if not isinstance(val, list) or not all(isinstance(i, str) for i in val):
+                    raise ValueError(f"'{k}' must be an array of strings")
+                entities[k] = val
             return entities, False
         except Exception as e:
-            print(f"[{self.agent_id}] Failed to parse entities: {e}. Using fallback.")
-            return self._fallback_entities(text), True
+            print(f"[{self.agent_id}] Failed to parse entities: {e}. Rejecting stage.")
+            return {"entity_fallback": True, "pipelineStatus": "rejected"}, True
 
     def _fallback_entities(self, text):
         text_lower = text.lower()

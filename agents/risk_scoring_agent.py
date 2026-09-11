@@ -74,7 +74,12 @@ JSON Output:
             json_str = match.group(0) if match else llm_response
             result = json_module.loads(json_str)
             score = int(result.get("policy_risk_score", result.get("risk_score", 50)))
-            alert_required = bool(result.get('alert_required', score >= 80))
+            if not (0 <= score <= 100):
+                raise ValueError("Risk score out of bounds (must be 0-100)")
+            alert_raw = result.get('alert_required', score >= 80)
+            if not isinstance(alert_raw, bool):
+                raise TypeError("alert_required must be a strict boolean")
+            alert_required = alert_raw
             reasoning = str(result.get("risk_reasoning", "Risk evaluated by LLM."))
 
             finding["policy_risk_score"] = score
@@ -84,8 +89,10 @@ JSON Output:
             finding["risk_fallback"] = False
             return finding
         except Exception as e:
-            print(f"[{self.agent_id}] JSON Parsing Failed: {e}. Using fallback.")
-            return self._fallback_scoring(finding, text, ent_dict)
+            print(f"[{self.agent_id}] Validation Failed: {e}. Rejecting stage.")
+            finding["risk_fallback"] = True
+            finding["pipelineStatus"] = "rejected"
+            return finding
 
     def _fallback_scoring(self, finding, text, entities):
         text_lower = text.lower()

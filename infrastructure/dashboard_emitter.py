@@ -211,12 +211,9 @@ class DashboardRunEmitter:
         token = os.getenv("DASHBOARD_INGEST_TOKEN", "").strip()
         if not endpoint or not token:
             return
-<<<<<<< HEAD
-=======
         if validate_ingest_url is None:
             raise RuntimeError("scripts/private_http.py is required beside the integration package")
         validate_ingest_url(endpoint)
->>>>>>> e5095c2 (feat(phase-0): enforce fail-closed evidence lifecycle and strict schema contracts)
         timeout = float(os.getenv("DASHBOARD_INGEST_TIMEOUT_SECONDS", "30"))
         request = urllib.request.Request(
             endpoint,

@@ -46,11 +46,8 @@ class ContextExpansionAgent:
         try:
             logging.info(f"[{self.agent_id}] Downloading PDF for extraction: {url}")
 
-            response = requests.get(
-                url,
-                timeout=30,
-                headers={"User-Agent": "Mozilla/5.0"}
-            )
+            from infrastructure.safe_fetch import safe_get
+            response = safe_get(url, timeout=15)
 
             response.raise_for_status()
 

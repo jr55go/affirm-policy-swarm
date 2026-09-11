@@ -64,11 +64,11 @@ Only output the 3 bullet points.
             llm_response = self._call_ollama(prompt)
             
             if llm_response is None:
-                # Fallback: use a truncated version of the original text
                 print(f"[{self.agent_id}] LLM call failed for finding: {finding.get('title', 'Unknown')}. Using fallback.")
-                # Simple fallback: take first 200 chars and format as bullets (not ideal but safe)
                 truncated = text_context[:200] + "..." if len(text_context) > 200 else text_context
                 finding["compressed_summary"] = f"- {truncated}"
+                finding["compression_fallback"] = True
+                finding["pipelineStatus"] = "rejected"
             else:
                 # Use the LLM response as the compressed summary
                 finding["compressed_summary"] = llm_response.strip()
